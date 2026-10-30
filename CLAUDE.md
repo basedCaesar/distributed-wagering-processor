@@ -24,7 +24,7 @@ Processador distribuído de transações de apostas (desafio de backend da Jungl
 
 ## Stack
 
-Bun 1.x · TypeScript `strict` · NestJS · MikroORM (`EntitySchema`) · PostgreSQL · LocalStack (SQS FIFO, SNS FIFO) · Docker Compose + nginx · Keycloak + `jose` · zod · pino · prom-client · fast-check · Biome.
+Bun 1.x · TypeScript `strict` · NestJS · MikroORM (`EntitySchema`) · PostgreSQL · LocalStack (SQS FIFO, SNS FIFO) · Docker Compose + nginx · Keycloak + `jose` · zod · `@nestjs/swagger` · pino · prom-client · fast-check · Biome.
 
 Processos (D7.4), mesma imagem, entrypoints diferentes:
 
@@ -135,7 +135,7 @@ scripts/acceptance.sh        roda os exemplos do §9 e do §10 literalmente
   - Na submissão, o `providerId` do corpo tem que ser o do token, senão `403`.
   - Nas consultas, o que é de outro provedor responde `404`.
 - **Não existe chave para desligar a autenticação.** Os testes usam o emissor de teste.
-- Health aberto. Fila sem auth.
+- Health e `/docs` (Swagger, D13.2) abertos. Fila sem auth.
 - Nenhum segredo real no repositório.
 
 **Banco (D7.3)**
@@ -178,3 +178,4 @@ bun run acceptance        # exemplos do §9 e do §10, literalmente
 2. `bun run check` verde. Testes de concorrência verdes em 10 execuções seguidas.
 3. Diff revisado com o checklist do plano.
 4. Se a IA errou e foi corrigida na fatia, o caso entra no `AI_WORKFLOW.md`.
+5. README.md da parte criada ou alterada atualizado, com o diagrama Mermaid previsto na D13.4 para a fatia, e endpoints novos documentados no Swagger (D13).

@@ -31,6 +31,7 @@ Este projeto foi construído com um agente de IA como par de programação. Os r
 | S0 | Nomeou testes com IDs errados (`R-12-04` nas moedas, `D-stack` inexistente) | Revisão do plano antes de aprovar | IDs corrigidos para `D2.5`/`D12.3` |
 | S0 | O plano criava as filas sem deduplicação, sem redrive e sem o tópico SNS | Revisão do plano contra a D8/D9 | O init cria tudo, e um teste confere os atributos |
 | S0 | O health do SQS usava `GetQueueUrl` em vez do `GetQueueAttributes` decidido na D11.3 | `/revisar` em contexto limpo | Corrigido |
+| D13 | O prompt da D13 contradizia a D11.5, não liberava o /docs nas regras e não punha o @nestjs/swagger na Stack | O agente apontou ao mostrar o diff, antes da aprovação | D11.5 ajustada, /docs aberto e @nestjs/swagger na Stack |
 | | | | |
 
 ## Provas de que os testes protegem

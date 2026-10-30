@@ -9,7 +9,7 @@ Critérios, em ordem:
 4. não inventar regra que o enunciado não pede;
 5. preferir a opção mais simples entre as corretas.
 
-**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada.
+**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada. D13 aprovada em 30/10/2026, junto com o ajuste da D11.5 (detalhe de cada parte no README dela).
 
 ---
 
@@ -248,7 +248,7 @@ B9.1–B9.5
 | 11.2 | Métricas com `prom-client` em `/metrics`, numa porta interna sem auth. A lista está abaixo da tabela. | Cobre a lista mínima (L675) e o "diagnóstico" (§14). | — |
 | 11.3 | Health:<br>• `/health/live`: o processo responde;<br>• `/health/ready`: `SELECT 1` e `GetQueueAttributes` no SQS, com timeout de 1 s cada. | L532, L533. | — |
 | 11.4 | Testes:<br>• unidade com fast-check (propriedades de `Money` e do ledger);<br>• integração com Postgres e LocalStack reais;<br>• concorrência com processos reais, sincronizada por `pg_locks` em vez de `sleep` ("determinismo", §14);<br>• provas que removem uma proteção e exigem que um teste falhe.<br>O invariante saldo = ledger roda no fim de todo teste com banco. Nos testes de unidade, roda sobre os lançamentos devolvidos pelo domínio. | L712, L729. | — |
-| 11.5 | Tudo que precisa de documentação fica no `ARCHITECTURE.md`, em seções próprias: transições, taxonomia, hash, prazos, interpretações e limitações. O README fica com setup e comandos. | Um lugar só para o avaliador ler. | — |
+| 11.5 | A visão geral e tudo que o §14 exige documentar ficam no `ARCHITECTURE.md`, em seções próprias: transições, taxonomia, hash, prazos, interpretações e limitações. O detalhe de cada parte fica no README dela (D13.1), com link a partir do `ARCHITECTURE.md`. O README da raiz fica com setup e comandos. | Um lugar só para o avaliador começar a ler. | — |
 | 11.6 | OpenTelemetry, Jaeger, Grafana e o teste de carga k6 (`bun run test:load`) são **extras**, feitos depois do núcleo. | Opcionais (L678, L746). | — |
 
 **As métricas do 11.2:**
@@ -273,6 +273,17 @@ C1, C3, C4, C5
 | 12.2 | "Microsserviços": o núcleo é **um serviço** (um código, um banco) rodando como vários processos. Os extras (`realtime`, `accounting`) são serviços separados que só conversam por eventos. | Separar o núcleo em bancos diferentes quebraria a atomicidade que o enunciado exige (L584). | Partir o núcleo em serviços. |
 | 12.3 | Secrets Manager: o núcleo lê as credenciais por uma porta `SecretsProvider`, com adaptador de variável de ambiente. O adaptador do Secrets Manager, no LocalStack, é um extra. | O encaixe existe desde o início, sem tornar o Secrets Manager obrigatório para rodar os testes. | — |
 | 12.4 | WebSocket: o serviço `realtime` assina o SNS e envia aos clientes os eventos da wallet que eles seguem, com token. É um extra. | Usa o encaixe 9.1 sem tocar o núcleo. | — |
+
+---
+
+## D13 — Documentação por parte, Swagger e diagramas
+
+| # | Decisão | Por quê | Alternativa descartada |
+|---|---|---|---|
+| 13.1 | Cada módulo (`src/modules/<contexto>/`) e cada área de `src/shared/` tem um `README.md` curto: o que faz, as regras principais citando os IDs (`R-…`, `D…`) sem copiar o texto das decisões, o fluxo de uma operação e onde estão os testes que provam cada regra. | Quem lê entende cada parte sem ler tudo. Citar IDs evita texto duplicado e desatualizado. | Um documento gigante só no fim. |
+| 13.2 | Swagger (OpenAPI) com `@nestjs/swagger` em `/docs`, aberto como o health. Cada endpoint documenta corpo, respostas e todos os status HTTP da D5, com o esquema Bearer quando a auth existir (D10). | O avaliador entende a API sem ler o código. Os status da D5 ficam visíveis. | Documentar endpoints só no README. |
+| 13.3 | A documentação é escrita na fatia que cria a parte, não no fim. | Fica correta e não acumula. | Escrever tudo na S10. |
+| 13.4 | Diagramas Mermaid só onde o texto explica mal, na fatia que cria a parte: estados da transação (S1), modelo de dados (S2), processamento de uma transação (S4), ciclo da mensagem SQS (S6), outbox com queda (S7) e visão geral dos processos (S8). | O GitHub renderiza Mermaid; é texto versionado. Cada diagrama responde uma pergunta que o avaliador faria. | Diagramas em imagem (desatualizam e não aparecem no diff); diagramas para tudo (viram ruído). |
 
 ---
 

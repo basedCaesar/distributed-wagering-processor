@@ -40,6 +40,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 - [ ] Os testes usam banco e fila reais? Algum `sleep` sincronizando teste?
 - [ ] Algum teste foi alterado só para passar?
 - [ ] Alguma regra nova que não está em `02-decisoes.md`?
+- [ ] README da parte, diagrama da fatia e Swagger atualizados (D13)?
 
 ---
 
@@ -75,7 +76,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `WalletLedgerEntry`;
 - o serviço de domínio que aplica as regras por kind e de referência;
 - `FailureCode`;
-- as classes de evento (envelope abstrato e subclasses).
+- as classes de evento (envelope abstrato e subclasses);
+- `README.md` de `src/shared/` (config, secrets, logger, health) e da infraestrutura, que ficaram da S0; `README.md` do domínio com o diagrama de estados da transação (D13).
 
 **Cobre:** R-06-*, R-07-*, R-11-08..12, R-13-U1..U5 · D1, D2, D4.5, D5 (códigos), D6.2, D6.5, D9.4
 
@@ -99,7 +101,8 @@ Se atrasar, os extras encolhem. O núcleo não.
   - os papéis do banco;
 - mapeamento MikroORM (`EntitySchema` e mappers);
 - tipo `Money`;
-- `bun run migration:verify`.
+- `bun run migration:verify`;
+- diagrama do modelo de dados (D13.4).
 
 **Cobre:** R-04-07, R-05-05, R-05-09, R-13-I1 · D6.1, D7.1, D7.3
 
@@ -122,7 +125,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `GET /wallets/:id/ledger` com cursor;
 - `POST /wallets/:id/reconciliation`;
 - o guard de autenticação com o `ProviderIdentityPort` e o emissor de teste, e o helper de teste que gera tokens;
-- o mapeamento de erros para HTTP.
+- o mapeamento de erros para HTTP;
+- Swagger em `/docs` com todos os endpoints existentes, incluindo health (D13.2).
 
 **Cobre:** R-09-02..07, R-09-18..19, R-02-* · D5, D6.2–6.4, D6.7–6.9, D10.1–10.4
 
@@ -143,7 +147,8 @@ Se atrasar, os extras encolhem. O núcleo não.
   - `balance_after`;
   - linhas da outbox;
 - `POST /wagering/transactions`;
-- as consultas de transação.
+- as consultas de transação;
+- diagrama de sequência do processamento de uma transação (D13.4).
 
 **Cobre:** R-07-*, R-08-*, R-09-08..17, R-13-C1..C3 · D1, D3.1–3.6, D5, D10.2
 
@@ -181,7 +186,8 @@ Se atrasar, os extras encolhem. O núcleo não.
   - cópia para a DLQ;
   - `message_attempts`;
   - backoff por visibilidade;
-  - `SIGTERM`.
+  - `SIGTERM`;
+- diagrama do ciclo da mensagem SQS (D13.4).
 
 **Cobre:** R-10-*, R-13-I3, R-13-I5, R-13-C5 · D3.7, D3.8, D8
 
@@ -197,7 +203,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 **Entrega:**
 - `outbox-publisher`: claim com lease, ordem por wallet, backoff, nunca descarta;
-- `event-auditor` com deduplicação por `eventId`.
+- `event-auditor` com deduplicação por `eventId`;
+- diagrama da outbox com queda do processo (D13.4).
 
 **Cobre:** R-11-*, R-13-I2, R-13-I4, R-13-C6, R-05-04 · D9
 
@@ -215,7 +222,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - topologia do Compose (nginx, `api` ×3, `consumer` ×3, `publisher` ×2, `worker` ×2, auditor);
 - `SIGTERM` em todos os processos;
 - testes de falha;
-- `bun run test:proofs`.
+- `bun run test:proofs`;
+- diagrama da visão geral dos processos (D13.4).
 
 **Cobre:** R-05-08, R-08-06, R-13-C4, R-13-C8, R-13-I6 · D7.4, D8.6
 
