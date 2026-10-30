@@ -64,7 +64,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 **Aceite:**
 - `bun run check` verde num teste trivial;
 - o lint falha se o `domain/` importar `@nestjs/*`;
-- a readiness fica falsa com o Postgres parado e com o LocalStack parado (teste de integração).
+- a readiness fica falsa com Postgres/LocalStack inalcançáveis (porta sem serviço e host não roteável) (teste de integração).
 
 ## S1 — Domínio puro
 

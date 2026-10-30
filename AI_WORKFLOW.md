@@ -28,6 +28,9 @@ Este projeto foi construído com um agente de IA como par de programação. Os r
 | Decisões | Replay "com o mesmo status" contradizia "pendente resolvida devolve o resultado novo" | Revisão final das decisões | D3.4 reescrita |
 | Decisões | A "cutucada" de pendentes de outras wallets podia formar ciclo de locks | Revisão final das decisões | Só pendentes da mesma wallet, com `SKIP LOCKED` (D4.4) |
 | Decisões | `WIN` referenciando `BET` rejeitada pagaria ganho sem aposta | Revisão final das decisões | `REFERENCE_NOT_PROCESSED` para toda referência (D1.4) |
+| S0 | Nomeou testes com IDs errados (`R-12-04` nas moedas, `D-stack` inexistente) | Revisão do plano antes de aprovar | IDs corrigidos para `D2.5`/`D12.3` |
+| S0 | O plano criava as filas sem deduplicação, sem redrive e sem o tópico SNS | Revisão do plano contra a D8/D9 | O init cria tudo, e um teste confere os atributos |
+| S0 | O health do SQS usava `GetQueueUrl` em vez do `GetQueueAttributes` decidido na D11.3 | `/revisar` em contexto limpo | Corrigido |
 | | | | |
 
 ## Provas de que os testes protegem

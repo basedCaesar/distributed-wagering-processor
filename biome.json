@@ -1,0 +1,89 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "linter": {
+    "enabled": true,
+    "rules": { "preset": "recommended" }
+  },
+  "javascript": {
+    "formatter": { "quoteStyle": "double" },
+    "parser": { "unsafeParameterDecoratorsEnabled": true }
+  },
+  "overrides": [
+    {
+      "includes": ["**/domain/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@nestjs/*",
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "zod",
+                      "**/application/**",
+                      "**/infra/**"
+                    ]
+                  }
+                ]
+              }
+            },
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "Number": "Dinheiro nunca usa number (D2 CLAUDE.md). Use Money.",
+                  "parseInt": "Dinheiro nunca usa parseInt (D2 CLAUDE.md). Use Money.",
+                  "parseFloat": "Dinheiro nunca usa parseFloat (D2 CLAUDE.md). Use Money."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/application/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "**/infra/**"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
