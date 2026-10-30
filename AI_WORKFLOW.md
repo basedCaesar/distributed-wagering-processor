@@ -32,6 +32,7 @@ Este projeto foi construído com um agente de IA como par de programação. Os r
 | S0 | O plano criava as filas sem deduplicação, sem redrive e sem o tópico SNS | Revisão do plano contra a D8/D9 | O init cria tudo, e um teste confere os atributos |
 | S0 | O health do SQS usava `GetQueueUrl` em vez do `GetQueueAttributes` decidido na D11.3 | `/revisar` em contexto limpo | Corrigido |
 | D13 | O prompt da D13 contradizia a D11.5, não liberava o /docs nas regras e não punha o @nestjs/swagger na Stack | O agente apontou ao mostrar o diff, antes da aprovação | D11.5 ajustada, /docs aberto e @nestjs/swagger na Stack |
+| S1 | Escreveu dois testes com expectativa errada: (1) o `ROLLBACK` de `WIN` esperava saldo final 70, mas o certo é 100 (saldo 100, ganha 15, devolve 15); (2) um teste montava um valor negativo com `brl("-15.00")`, que o `Money.from` já rejeita antes de chegar ao que se queria testar | O próprio agente, ao implementar | Mudança só nos testes, aprovada por mim: a expectativa virou 100 e o valor negativo passou a ser `brl("15.00").negate()`. A implementação não mudou |
 | | | | |
 
 ## Provas de que os testes protegem

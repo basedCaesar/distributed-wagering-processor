@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import { logger } from "../logger/logger";
 import type { DatabaseCredentials } from "../secrets/secrets-provider.port";
 import { errorMessage, type HealthCheckResult } from "./health.types";
 import { withTimeout } from "./with-timeout";
@@ -23,6 +24,11 @@ export async function checkPostgres(
   } catch (error) {
     return { status: "error", reason: errorMessage(error) };
   } finally {
-    client.end().catch(() => {});
+    client.end().catch((error: unknown) => {
+      logger.warn(
+        { check: "postgres", reason: errorMessage(error) },
+        "falha ao fechar a conexão do health check",
+      );
+    });
   }
 }

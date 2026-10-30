@@ -104,6 +104,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `bun run migration:verify`;
 - diagrama do modelo de dados (D13.4).
 
+**Contratos do domínio (S1):** A version só sobe dentro de Wallet.debit/credit; o mapeamento do ORM não pode incrementá-la (D7.2, D14). Coluna failure_detail (D14.3).
+
 **Cobre:** R-04-07, R-05-05, R-05-09, R-13-I1 · D6.1, D7.1, D7.3
 
 **Aceite:**
@@ -149,6 +151,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `POST /wagering/transactions`;
 - as consultas de transação;
 - diagrama de sequência do processamento de uma transação (D13.4).
+
+**Contratos do domínio (S1):** A busca da referência calcula alreadyReversed como 'existe reversão PROCESSED dela, de qualquer tipo' (D1.1).
 
 **Cobre:** R-07-*, R-08-*, R-09-08..17, R-13-C1..C3 · D1, D3.1–3.6, D5, D10.2
 

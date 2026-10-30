@@ -52,7 +52,8 @@
                 "deniedGlobals": {
                   "Number": "Dinheiro nunca usa number (D2 CLAUDE.md). Use Money.",
                   "parseInt": "Dinheiro nunca usa parseInt (D2 CLAUDE.md). Use Money.",
-                  "parseFloat": "Dinheiro nunca usa parseFloat (D2 CLAUDE.md). Use Money."
+                  "parseFloat": "Dinheiro nunca usa parseFloat (D2 CLAUDE.md). Use Money.",
+                  "Math": "Dinheiro nunca usa Math.* (D2 CLAUDE.md, D14.8). Use Money."
                 }
               }
             }

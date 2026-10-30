@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "biome lint ./src ./test/unit ./test/integration ./test/concurrency ./scripts",
+    "lint": "biome lint ./src ./test/support ./test/unit ./test/integration ./test/concurrency ./scripts",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test --env-file=.env.test test/integration",
     "test:concurrency": "bun test --env-file=.env.test test/concurrency",
@@ -21,6 +21,7 @@
     "@types/bun": "latest",
     "@types/express": "^5.0.6",
     "@types/pg": "^8.23.1",
+    "fast-check": "^4.10.2",
     "typescript": "^7.0.2"
   },
   "dependencies": {
