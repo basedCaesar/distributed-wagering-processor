@@ -3,12 +3,19 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: wagering
-      POSTGRES_USER: wagering_app
-      POSTGRES_PASSWORD: wagering_app
+      # Superusuário só do init; a aplicação e as migrations usam os papéis abaixo (D7.3).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      DB_OWNER_PASSWORD: wagering_owner
+      DB_APP_PASSWORD: wagering_app
     ports:
       - "5432:5432"
+    volumes:
+      - ./scripts/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    # TCP (-h 127.0.0.1): durante o init, o servidor temporário só escuta no socket
+    # Unix; sem -h, o healthcheck passaria antes do Postgres aceitar conexões de rede.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wagering_app -d wagering"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d wagering"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -27,10 +34,28 @@ services:
       timeout: 2s
       retries: 30
 
+  # One-shot: aplica as migrations com o papel dono e sai (D7.3).
+  migrate:
+    build: .
+    command: ["scripts/migrate.ts", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: wagering
+      DB_USER: wagering_app
+      DB_PASSWORD: wagering_app
+      DB_MIGRATION_USER: wagering_owner
+      DB_MIGRATION_PASSWORD: wagering_owner
+
   api:
     build: .
     command: ["src/entrypoints/main-api.ts"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       localstack:

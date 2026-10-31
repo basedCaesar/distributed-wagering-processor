@@ -36,3 +36,34 @@ describe("S0 D12.3: SecretsProvider de variável de ambiente", () => {
     );
   });
 });
+
+describe("S2 D7.3 D12.3: credenciais do papel dono, só para as migrations", () => {
+  const migrationEnv = {
+    ...baseEnv,
+    DB_MIGRATION_USER: "wagering_owner",
+    DB_MIGRATION_PASSWORD: "owner-secret",
+  };
+
+  it("D7.3: lê usuário e senha do dono, com host, porta e banco da aplicação", async () => {
+    const provider = new EnvSecretsProvider(migrationEnv);
+
+    const credentials = await provider.getMigrationDatabaseCredentials();
+
+    expect(credentials).toEqual({
+      host: "localhost",
+      port: 5432,
+      database: "wagering",
+      user: "wagering_owner",
+      password: "owner-secret",
+    });
+  });
+
+  it("D7.3: sem DB_MIGRATION_USER lança MissingSecretError (não cai no papel da app)", async () => {
+    const { DB_MIGRATION_USER, ...withoutOwner } = migrationEnv;
+    const provider = new EnvSecretsProvider(withoutOwner);
+
+    await expect(provider.getMigrationDatabaseCredentials()).rejects.toThrow(
+      MissingSecretError,
+    );
+  });
+});

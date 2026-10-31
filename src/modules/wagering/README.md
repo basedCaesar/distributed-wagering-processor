@@ -1,6 +1,6 @@
 # wagering — domínio
 
-TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). Persistência, use cases e HTTP chegam nas fatias seguintes (`application/`, `infra/`).
+TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). A persistência (schema, garantias no banco, ORM) está em [`infra/persistence/README.md`](infra/persistence/README.md). Use cases e HTTP chegam nas fatias seguintes (`application/`, `infra/`).
 
 ## Peças
 
@@ -15,7 +15,7 @@ TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada
 | `domain-error.ts`            | Erros lançados: payload inválido (vira `400`) ou erro de programação. Violação de regra de negócio **não** lança: vira `REJECTED`.                                                                                                         | D5                                                 |
 | `events/`                    | `IntegrationEvent` abstrato e uma subclasse por evento, com `eventType` e `version` no tipo. `data` só com `MoneyProps`.                                                                                                                   | R-11-08..12 · D9.3, D9.4, D14.4                    |
 
-A `version` da wallet sobe **só** dentro de `Wallet.debit`/`credit`. O mapeamento do ORM (S2) não pode incrementá-la (D7.2).
+A `version` da wallet sobe **só** dentro de `Wallet.debit`/`credit`. O mapeamento do ORM não a incrementa, e o banco recusa dois escritores com a mesma versão (D7.2, D15.7).
 
 ## Estados da transação
 

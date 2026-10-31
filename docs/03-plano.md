@@ -38,6 +38,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 - [ ] Algum `catch` engole erro? Todo erro passa por `classifyError()`?
 - [ ] Algum log com valor, saldo, payload, `playerId` ou token?
 - [ ] Os testes usam banco e fila reais? Algum `sleep` sincronizando teste?
+- [ ] Rodadas de 10× salvam o log de qualquer falha
 - [ ] Algum teste foi alterado só para passar?
 - [ ] Alguma regra nova que não está em `02-decisoes.md`?
 - [ ] README da parte, diagrama da fatia e Swagger atualizados (D13)?
@@ -153,6 +154,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - diagrama de sequência do processamento de uma transação (D13.4).
 
 **Contratos do domínio (S1):** A busca da referência calcula alreadyReversed como 'existe reversão PROCESSED dela, de qualquer tipo' (D1.1).
+
+**Contratos da persistência (S2):** o repositório grava o correlationId da submissão (D9.5). Ele não está na entidade: o repositório o recebe junto ao salvar e o passa ao `wagerTransactionToRecord`; a coluna é imutável depois do `INSERT`.
 
 **Cobre:** R-07-*, R-08-*, R-09-08..17, R-13-C1..C3 · D1, D3.1–3.6, D5, D10.2
 

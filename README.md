@@ -21,11 +21,31 @@ bun run infra:down
 bun run infra:test:up     # infraestrutura dos testes (portas separadas)
 bun run infra:test:down
 
-bun run check             # typecheck + lint + unit + integração + concorrência
+bun run migration:up      # aplica as migrations (papel dono)
+bun run migration:down    # desfaz todas
+bun run migration:verify  # up → down → up no banco de teste
+
+bun run check             # typecheck + lint + unit + migration:verify + integração + concorrência
 bun run acceptance        # exemplos do §9 e do §10, literalmente
 ```
 
-`bun run check` precisa da infraestrutura de teste no ar (`bun run infra:test:up`).
+`bun run check` precisa da infraestrutura de teste no ar (`bun run infra:test:up`). No Compose de dev, o serviço `migrate` aplica as migrations antes da `api` subir.
+
+Para rodar a API ou as migrations **fora do Docker** (`bun run migration:up`, `bun run src/entrypoints/main-api.ts`), crie antes o `.env` a partir do exemplo:
+
+```bash
+cp .env.example .env              # Linux/Mac
+Copy-Item .env.example .env       # Windows (PowerShell)
+```
+
+`bun run infra:up` e `bun run check` **não** precisam do `.env`: o Compose define as variáveis de cada serviço e os testes usam o `.env.test`.
+
+> **Quem já tinha os containers de antes da S2 precisa recriá-los.** Os papéis do banco (`wagering_owner`, `wagering_app`) são criados pelo `scripts/postgres-init.sh`, que o Postgres só roda num volume novo:
+>
+> ```bash
+> bun run infra:test:down && bun run infra:test:up    # testes
+> docker compose down -v && bun run infra:up          # dev (apaga os dados locais)
+> ```
 
 ## Infraestrutura
 
@@ -35,6 +55,8 @@ bun run acceptance        # exemplos do §9 e do §10, literalmente
 | LocalStack 3 (SQS, SNS) | `localhost:4566` | `localhost:4567` |
 
 Variáveis: `.env.example` (dev) e `.env.test` (testes). Nenhum segredo real.
+
+O Postgres tem três papéis (D7.3): `postgres` só para o init do container, `wagering_owner` para as migrations (`DB_MIGRATION_USER`) e `wagering_app` para a aplicação e os testes (`DB_USER`), sem `UPDATE`/`DELETE` no ledger. Detalhes em [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md).
 
 O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto e cria:
 
@@ -63,6 +85,7 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Parte | README |
 |---|---|
 | Domínio (dinheiro, wallet, ledger, transação, eventos) | [`src/modules/wagering/README.md`](src/modules/wagering/README.md) |
+| Persistência (schema, garantias no banco, ORM, migrations) | [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md) |
 | Configuração | [`src/shared/config/README.md`](src/shared/config/README.md) |
 | Segredos | [`src/shared/secrets/README.md`](src/shared/secrets/README.md) |
 | Logs | [`src/shared/logger/README.md`](src/shared/logger/README.md) |

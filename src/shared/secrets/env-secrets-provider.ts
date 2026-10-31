@@ -1,5 +1,6 @@
 import type {
   DatabaseCredentials,
+  MigrationSecretsProvider,
   SecretsProvider,
 } from "./secrets-provider.port";
 
@@ -21,7 +22,9 @@ function requireEnv(
   return value;
 }
 
-export class EnvSecretsProvider implements SecretsProvider {
+export class EnvSecretsProvider
+  implements SecretsProvider, MigrationSecretsProvider
+{
   constructor(
     private readonly env: Record<string, string | undefined> = process.env,
   ) {}
@@ -33,6 +36,16 @@ export class EnvSecretsProvider implements SecretsProvider {
       database: requireEnv(this.env, "DB_NAME"),
       user: requireEnv(this.env, "DB_USER"),
       password: requireEnv(this.env, "DB_PASSWORD"),
+    };
+  }
+
+  /** Mesmo host, porta e banco; usuário e senha do papel dono (D7.3). */
+  async getMigrationDatabaseCredentials(): Promise<DatabaseCredentials> {
+    const app = await this.getDatabaseCredentials();
+    return {
+      ...app,
+      user: requireEnv(this.env, "DB_MIGRATION_USER"),
+      password: requireEnv(this.env, "DB_MIGRATION_PASSWORD"),
     };
   }
 }
