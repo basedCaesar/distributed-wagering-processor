@@ -3,8 +3,6 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import type { Logger } from "pino";
 import { LOGGER } from "../../../../shared/logger/logger.module";
 import {
-  CLOCK,
-  type Clock,
   ID_GENERATOR,
   type IdGenerator,
   UNIT_OF_WORK,
@@ -30,9 +28,9 @@ class PendingWorkerShutdown implements OnModuleDestroy {
   providers: [
     {
       provide: ResolvePendingTransactionUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator, clock: Clock) =>
-        new ResolvePendingTransactionUseCase(uow, ids, clock),
-      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator) =>
+        new ResolvePendingTransactionUseCase(uow, ids),
+      inject: [UNIT_OF_WORK, ID_GENERATOR],
     },
     {
       provide: PendingWorker,

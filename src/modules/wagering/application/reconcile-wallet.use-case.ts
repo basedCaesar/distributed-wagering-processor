@@ -4,7 +4,6 @@ import {
 } from "../domain/wallet-reconciliation";
 import { WalletNotFoundError } from "./errors";
 import type {
-  Clock,
   IdGenerator,
   ReconciliationLog,
   ReconciliationMetrics,
@@ -14,14 +13,14 @@ import type {
 /**
  * `POST /wallets/:id/reconciliation` (R-09-18, R-09-19, D6.9). Lê a wallet
  * e o ledger no mesmo snapshot (`REPEATABLE READ`, sem lock: não trava
- * escritas) e grava a execução. Divergência vira log, métrica e
- * `consistent: false`; **nada é corrigido**.
+ * escritas) e grava a execução, com o horário do `now()` da transação
+ * (D18.12). Divergência vira log, métrica e `consistent: false`; **nada é
+ * corrigido**.
  */
 export class ReconcileWalletUseCase {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
-    private readonly clock: Clock,
     private readonly metrics: ReconciliationMetrics,
     private readonly log: ReconciliationLog,
   ) {}
@@ -35,7 +34,7 @@ export class ReconcileWalletUseCase {
         tx.reconciliationRuns.insert({
           id: this.ids.next(),
           report: result,
-          executedAt: this.clock.now(),
+          executedAt: await tx.now(),
         });
         return result;
       },

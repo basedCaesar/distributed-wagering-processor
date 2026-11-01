@@ -71,6 +71,9 @@ const NUDGE_DEPENDENTS_SQL = `
         AND status = 'PENDING_REFERENCE'
       FOR UPDATE SKIP LOCKED)`;
 
+/** O `now()` da transação (D18.12), truncado em milissegundos. */
+const NOW_SQL = `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS now`;
+
 /** Record já carregado e travado na transação (por `lockById`/`lockPending`). */
 function lockedRecord(em: EntityManager, id: string): WagerTransactionRecord {
   const record = em.getReference(WagerTransactionSchema, id);
@@ -121,6 +124,15 @@ function violatedUnique(error: unknown): string | undefined {
 
 function scopeFor(em: EntityManager): TransactionScope {
   return {
+    // `now()` é o início da transação no Postgres: o mesmo valor a cada
+    // chamada, e o mesmo relógio do claim e da cutucada (D18.12). Sai em ISO
+    // UTC com milissegundos (a precisão do `Date`): o MikroORM troca os
+    // parsers do `pg`, e um `timestamptz` cru chegaria como string.
+    async now() {
+      const [row] = await em.execute<{ now: string }[]>(NOW_SQL);
+      if (!row) throw new Error("SELECT now() não devolveu linha");
+      return new Date(row.now);
+    },
     wallets: walletRepository(em),
     transactions: transactionRepository(em),
     ledger: ledgerRepository(em),
@@ -193,6 +205,7 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
         attempts: 0,
         consecutiveErrors: 0,
         lockedUntil: null,
+        lockedBy: null,
       });
     },
     async lockPending(id) {
@@ -209,14 +222,15 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
           consecutiveErrors: record.consecutiveErrors ?? 0,
         },
         correlationId: record.correlationId,
+        lockedBy: record.lockedBy ?? null,
       };
     },
     // O record gerenciado vem do `lockPending`; o flush grava só o que
     // mudou. Colunas da submissão não mudam (trigger, D7.3).
-    resolve(tx: WagerTransaction, control: PendingControl) {
+    resolve(tx: WagerTransaction, control: PendingControl, at: Date) {
       const record = lockedRecord(em, tx.id);
       const next = wagerTransactionToRecord(tx, {
-        updatedAt: tx.processedAt ?? new Date(),
+        updatedAt: at,
         correlationId: record.correlationId,
       });
       em.assign(record, {
@@ -232,6 +246,7 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
         consecutiveErrors: control.consecutiveErrors,
         nextAttemptAt: null,
         lockedUntil: null,
+        lockedBy: null,
       });
     },
     reschedule(id, control) {
@@ -240,6 +255,7 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
         consecutiveErrors: control.consecutiveErrors,
         nextAttemptAt: control.nextAttemptAt,
         lockedUntil: null,
+        lockedBy: null,
       });
     },
     async nudgeDependents(tx: WagerTransaction) {

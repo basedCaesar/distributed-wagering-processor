@@ -243,7 +243,10 @@ Se atrasar, os extras encolhem. O núcleo não.
   - o índice de reversão;
   - o `CHECK` de saldo;
   - o trigger do ledger;
-  - o `SKIP LOCKED`;
+  - o `SKIP LOCKED` no claim do worker de pendentes;
+  - a cutucada das pendentes (D4.4);
+  - o desempate da D18.9 invertido;
+  - a checagem do dono do lease (D18.10);
   - o ack antes do commit;
   - a inbox;
   - o trigger de cauda;

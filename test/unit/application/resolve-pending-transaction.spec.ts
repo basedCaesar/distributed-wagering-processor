@@ -59,7 +59,10 @@ function processedBet(): WagerTransaction {
 interface FakeOptions {
   pending?: LockedPending | undefined;
   reference?: ReferenceLookup;
+  /** O `now()` da transação no banco (D18.12). */
   now: Date;
+  /** A wallet da pendente não existe (D18.13). */
+  walletMissing?: boolean;
 }
 
 /** Escopo em memória que registra o que o use case fez, na ordem. */
@@ -67,17 +70,18 @@ function fake(options: FakeOptions) {
   const calls: string[] = [];
   const events: IntegrationEvent<unknown>[] = [];
   const written: {
-    resolved?: { tx: WagerTransaction; control: PendingControl };
+    resolved?: { tx: WagerTransaction; control: PendingControl; at: Date };
     rescheduled?: PendingControl & { nextAttemptAt: Date };
     nudged?: WagerTransaction;
     ledger: number;
     walletUpdated: boolean;
   } = { ledger: 0, walletUpdated: false };
   const scope = {
+    now: async () => options.now,
     wallets: {
       lockById: async () => {
         calls.push("lockWallet");
-        return wallet();
+        return options.walletMissing ? undefined : wallet();
       },
       update: () => {
         written.walletUpdated = true;
@@ -92,8 +96,8 @@ function fake(options: FakeOptions) {
         calls.push("findReference");
         return options.reference ?? { found: false };
       },
-      resolve: (tx: WagerTransaction, control: PendingControl) => {
-        written.resolved = { tx, control };
+      resolve: (tx: WagerTransaction, control: PendingControl, at: Date) => {
+        written.resolved = { tx, control, at };
       },
       reschedule: (_id: string, control: PendingControl & { nextAttemptAt: Date }) => {
         written.rescheduled = control;
@@ -116,23 +120,23 @@ function fake(options: FakeOptions) {
   } as unknown as TransactionScope;
   const uow: UnitOfWork = { run: (work) => work(scope) };
   let sequence = 0;
-  const useCase = new ResolvePendingTransactionUseCase(
-    uow,
-    { next: () => `id-${++sequence}` },
-    { now: () => options.now },
-  );
+  const useCase = new ResolvePendingTransactionUseCase(uow, { next: () => `id-${++sequence}` });
   return { useCase, calls, events, written };
 }
 
+const LEASE_TOKEN = "lease-worker-a";
+
 const locked = (
   control: PendingControl = { attempts: 0, consecutiveErrors: 0 },
+  lockedBy: string | null = LEASE_TOKEN,
 ): LockedPending => ({
   transaction: pendingRefund(),
   control,
   correlationId: "corr-original",
+  lockedBy,
 });
 
-const claimed = { id: "refund-1", walletId: WALLET_ID };
+const claimed = { id: "refund-1", walletId: WALLET_ID, leaseToken: LEASE_TOKEN };
 const found = (): ReferenceLookup => ({
   found: true,
   transaction: processedBet(),
@@ -228,7 +232,12 @@ describe("D4.3 D4.4 D18: ResolvePendingTransactionUseCase.attempt", () => {
     const done = pendingRefund();
     done.reject(FailureCode.ReferenceNotFound, { balanceAfter: brl("100.00") });
     const { useCase, calls, events, written } = fake({
-      pending: { transaction: done, control: { attempts: 1, consecutiveErrors: 0 }, correlationId: null },
+      pending: {
+        transaction: done,
+        control: { attempts: 1, consecutiveErrors: 0 },
+        correlationId: null,
+        lockedBy: null,
+      },
       now: T0,
     });
 
@@ -237,6 +246,69 @@ describe("D4.3 D4.4 D18: ResolvePendingTransactionUseCase.attempt", () => {
     expect(written.resolved).toBeUndefined();
     expect(written.rescheduled).toBeUndefined();
     expect(events).toEqual([]);
+  });
+
+  for (const [label, lockedBy] of [
+    ["outro worker reclamou depois que o lease venceu", "lease-worker-b"],
+    ["o outro worker já terminou e soltou o lease", null],
+  ] as const) {
+    it(`D18.10: ainda pendente, mas ${label} → skipped, nada gravado`, async () => {
+      const { useCase, calls, events, written } = fake({
+        pending: locked({ attempts: 3, consecutiveErrors: 1 }, lockedBy),
+        reference: found(),
+        now: T0,
+      });
+
+      expect(await useCase.attempt(claimed)).toEqual({ kind: "skipped" });
+      expect(calls).toEqual(["lockWallet", "lockPending"]);
+      expect(written.resolved).toBeUndefined();
+      expect(written.rescheduled).toBeUndefined();
+      expect(written.ledger).toBe(0);
+      expect(events).toEqual([]);
+    });
+  }
+
+  it("D18.12: os horários gravados vêm do now() da transação (scope), não de um relógio da aplicação", async () => {
+    const dbNow = new Date(T0.getTime() + 42 * SECOND);
+    const { useCase, events, written } = fake({ pending: locked(), reference: found(), now: dbNow });
+
+    await useCase.attempt(claimed);
+
+    expect(written.resolved?.at).toEqual(dbNow);
+    expect(written.resolved?.tx.processedAt).toEqual(dbNow);
+    for (const event of events) expect(event.occurredAt).toEqual(dbNow);
+  });
+
+  it("D18.13: a wallet da pendente não existe → FAILED PROCESSING_FAILED na primeira tentativa, evento e cutucada", async () => {
+    const { useCase, calls, events, written } = fake({
+      pending: locked({ attempts: 0, consecutiveErrors: 0 }),
+      reference: found(),
+      now: T0,
+      walletMissing: true,
+    });
+
+    const result = await useCase.attempt(claimed);
+
+    expect(result).toEqual({ kind: "resolved", status: WagerTransactionStatus.Failed });
+    expect(calls).toEqual(["lockWallet", "lockPending"]);
+    expect(written.resolved?.tx.failureCode).toBe(FailureCode.ProcessingFailed);
+    expect(written.resolved?.control).toEqual({ attempts: 1, consecutiveErrors: 1 });
+    expect(written.walletUpdated).toBe(false);
+    expect(written.ledger).toBe(0);
+    expect(written.nudged?.id).toBe("refund-1");
+    expect(events.map((event) => event.eventType)).toEqual(["WagerTransactionFailed"]);
+    expect(events[0]?.correlationId).toBe("corr-original");
+  });
+
+  it("D18.13 D18.10: wallet inexistente e lease de outro worker → skipped", async () => {
+    const { useCase, written } = fake({
+      pending: locked(undefined, "lease-worker-b"),
+      now: T0,
+      walletMissing: true,
+    });
+
+    expect(await useCase.attempt(claimed)).toEqual({ kind: "skipped" });
+    expect(written.resolved).toBeUndefined();
   });
 });
 
@@ -293,5 +365,80 @@ describe("D4.2 D18.4: ResolvePendingTransactionUseCase.recordError", () => {
     const { useCase } = fake({ pending: undefined, now: T0 });
 
     expect(await useCase.recordError(claimed, { transient: false })).toEqual({ kind: "skipped" });
+  });
+
+  it("D18.10: o lease é de outro worker → skipped, sem contar tentativa nem erro", async () => {
+    const { useCase, written } = fake({
+      pending: locked({ attempts: 4, consecutiveErrors: 4 }, "lease-worker-b"),
+      now: T0,
+    });
+
+    expect(await useCase.recordError(claimed, { transient: false })).toEqual({ kind: "skipped" });
+    expect(written.resolved).toBeUndefined();
+    expect(written.rescheduled).toBeUndefined();
+  });
+
+  it("D18.13: a wallet da pendente não existe → FAILED PROCESSING_FAILED já no 1º erro", async () => {
+    const { useCase, events, written } = fake({
+      pending: locked({ attempts: 0, consecutiveErrors: 0 }),
+      now: T0,
+      walletMissing: true,
+    });
+
+    const result = await useCase.recordError(claimed, { transient: false });
+
+    expect(result).toEqual({ kind: "resolved", status: WagerTransactionStatus.Failed });
+    expect(written.resolved?.tx.failureCode).toBe(FailureCode.ProcessingFailed);
+    expect(written.resolved?.control).toEqual({ attempts: 1, consecutiveErrors: 1 });
+    expect(events.map((event) => event.eventType)).toEqual(["WagerTransactionFailed"]);
+  });
+
+  for (const transient of [false, true]) {
+    it(`D18.11: erro ${transient ? "transitório" : "não transitório"} antes do prazo → next_attempt_at preso a created_at + 15 min`, async () => {
+      // attempts 4 → backoff de 16 s; faltam 5 s para o prazo.
+      const now = new Date(T0.getTime() + 15 * MINUTE - 5 * SECOND);
+      const { useCase, written } = fake({
+        pending: locked({ attempts: 4, consecutiveErrors: 0 }),
+        now,
+      });
+
+      const result = await useCase.recordError(claimed, { transient });
+
+      const deadline = new Date(T0.getTime() + 15 * MINUTE);
+      expect(result).toEqual({ kind: "rescheduled", nextAttemptAt: deadline });
+      expect(written.rescheduled?.nextAttemptAt).toEqual(deadline);
+    });
+
+    it(`D18.11: erro ${transient ? "transitório" : "não transitório"} depois do prazo → backoff normal, sem expirar (não deu para avaliar)`, async () => {
+      const now = new Date(T0.getTime() + 16 * MINUTE);
+      const { useCase, events, written } = fake({
+        pending: locked({ attempts: 2, consecutiveErrors: 0 }),
+        now,
+      });
+
+      const result = await useCase.recordError(claimed, { transient });
+
+      expect(result).toEqual({ kind: "rescheduled", nextAttemptAt: new Date(now.getTime() + 4 * SECOND) });
+      expect(written.rescheduled).toEqual({
+        attempts: 3,
+        consecutiveErrors: transient ? 0 : 1,
+        nextAttemptAt: new Date(now.getTime() + 4 * SECOND),
+      });
+      expect(written.resolved).toBeUndefined();
+      expect(events).toEqual([]);
+    });
+  }
+
+  it("D18.11: depois de erros além do prazo, a primeira tentativa que consegue avaliar expira → REFERENCE_NOT_FOUND", async () => {
+    const { useCase, written } = fake({
+      pending: locked({ attempts: 7, consecutiveErrors: 3 }),
+      now: new Date(T0.getTime() + 18 * MINUTE),
+    });
+
+    const result = await useCase.attempt(claimed);
+
+    expect(result).toEqual({ kind: "resolved", status: WagerTransactionStatus.Rejected });
+    expect(written.resolved?.tx.failureCode).toBe(FailureCode.ReferenceNotFound);
+    expect(written.resolved?.control).toEqual({ attempts: 8, consecutiveErrors: 0 });
   });
 });

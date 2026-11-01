@@ -35,11 +35,7 @@ export async function startTestWorker(
   });
   const base = new MikroOrmUnitOfWork(orm);
   const uow = options.wrapUow ? options.wrapUow(base) : base;
-  const useCase = new ResolvePendingTransactionUseCase(
-    uow,
-    { next: () => Bun.randomUUIDv7() },
-    { now: () => new Date() },
-  );
+  const useCase = new ResolvePendingTransactionUseCase(uow, { next: () => Bun.randomUUIDv7() });
   const queue = new MikroOrmPendingQueue(orm);
   const worker = new PendingWorker(
     queue,
@@ -90,7 +86,9 @@ export interface PendingRow {
   consecutive_errors: number;
   next_attempt_at: Date | null;
   locked_until: Date | null;
+  locked_by: string | null;
   created_at: Date;
+  processed_at: Date | null;
   balance_after: string | null;
   reference_transaction_id: string | null;
 }
@@ -99,7 +97,8 @@ export async function pendingRow(id: string): Promise<PendingRow> {
   return withClient("app", async (client) => {
     const { rows } = await client.query<PendingRow>(
       `SELECT status, failure_code, attempts, consecutive_errors, next_attempt_at, locked_until,
-              created_at, balance_after::text AS balance_after, reference_transaction_id
+              locked_by, created_at, processed_at, balance_after::text AS balance_after,
+              reference_transaction_id
          FROM wager_transactions WHERE id = $1`,
       [id],
     );
@@ -119,17 +118,32 @@ export async function pendingRow(id: string): Promise<PendingRow> {
 export async function parkPendings(client: Client, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await client.query(
-    `UPDATE wager_transactions SET next_attempt_at = now() + interval '1 day', locked_until = NULL
+    `UPDATE wager_transactions
+        SET next_attempt_at = now() + interval '1 day', locked_until = NULL, locked_by = NULL
       WHERE id = ANY($1) AND status = 'PENDING_REFERENCE'`,
     [ids],
   );
   ids.length = 0;
 }
 
+/**
+ * Estaciona **todas** as pendentes do banco, de qualquer arquivo ou rodada
+ * anterior. Para o teste que mede tempo com o worker em laço: nada de
+ * backlog na frente do que ele mede.
+ */
+export async function parkAllPendings(client: Client): Promise<void> {
+  await client.query(
+    `UPDATE wager_transactions
+        SET next_attempt_at = now() + interval '1 day', locked_until = NULL, locked_by = NULL
+      WHERE status = 'PENDING_REFERENCE'`,
+  );
+}
+
 /** "O tempo passou": a pendente vence agora (só colunas de controle, D4.5). */
 export async function makeDue(client: Client, id: string): Promise<void> {
   await client.query(
-    "UPDATE wager_transactions SET next_attempt_at = now(), locked_until = NULL WHERE id = $1",
+    `UPDATE wager_transactions SET next_attempt_at = now(), locked_until = NULL, locked_by = NULL
+      WHERE id = $1`,
     [id],
   );
 }

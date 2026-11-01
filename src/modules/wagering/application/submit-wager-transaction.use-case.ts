@@ -16,14 +16,11 @@ import {
   WalletNotFoundError,
 } from "./errors";
 import { payloadHash } from "./payload-hash";
-import type {
-  Clock,
-  IdGenerator,
-  OperationMeta,
-  SubmissionMetrics,
-  UnitOfWork,
-} from "./ports";
+import type { IdGenerator, OperationMeta, SubmissionMetrics, UnitOfWork } from "./ports";
 import { eventsForTransition } from "./transaction-events";
+
+/** Horário da cópia que só valida o payload, antes do banco (nunca é gravada). */
+const VALIDATION_ONLY = new Date(0);
 
 /** O mesmo comando para o HTTP e para a fila (R-10-03, D3.3). */
 export interface SubmitWagerTransactionCommand {
@@ -66,7 +63,6 @@ export class SubmitWagerTransactionUseCase {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
-    private readonly clock: Clock,
     private readonly metrics: SubmissionMetrics,
   ) {}
 
@@ -75,8 +71,9 @@ export class SubmitWagerTransactionUseCase {
     meta: OperationMeta,
   ): Promise<SubmissionResult> {
     const hash = payloadHash(command);
-    // Valida antes de tocar o banco: inválido nunca é gravado (D5).
-    this.build(command, hash);
+    // Valida antes de tocar o banco: inválido nunca é gravado (D5). Esta
+    // cópia é descartada, então o horário não importa.
+    this.build(command, hash, VALIDATION_ONLY);
 
     const known = await this.uow.run((tx) =>
       tx.transactions.findByProviderAndKey(command.providerId, command.idempotencyKey),
@@ -130,7 +127,8 @@ export class SubmitWagerTransactionUseCase {
       );
       if (sameExternal) throw new ExternalIdConflictError(sameExternal.id);
 
-      const transaction = this.build(command, hash);
+      // Todo horário gravado vem do now() da transação no banco (D18.12).
+      const transaction = this.build(command, hash, await tx.now());
       const reference =
         command.referenceExternalTransactionId === undefined
           ? undefined
@@ -169,7 +167,11 @@ export class SubmitWagerTransactionUseCase {
   }
 
   /** `WagerTransaction.create` valida kind, referência por kind e sinal do valor (D1.5, D2.3). */
-  private build(command: SubmitWagerTransactionCommand, hash: string): WagerTransaction {
+  private build(
+    command: SubmitWagerTransactionCommand,
+    hash: string,
+    createdAt: Date,
+  ): WagerTransaction {
     try {
       return WagerTransaction.create({
         id: this.ids.next(),
@@ -184,7 +186,7 @@ export class SubmitWagerTransactionUseCase {
         kind: command.kind,
         money: command.money,
         referenceExternalTransactionId: command.referenceExternalTransactionId,
-        createdAt: this.clock.now(),
+        createdAt,
       });
     } catch (error) {
       if (!(error instanceof InvalidWagerTransactionError)) throw error;

@@ -47,6 +47,8 @@ export interface WagerTransactionRecord {
   consecutiveErrors?: number;
   /** Lease do claim (D4.3, D18.2). */
   lockedUntil?: Date | null;
+  /** Token do worker dono do lease (D18.10). */
+  lockedBy?: string | null;
 }
 
 const nullableText = (fieldName: string) =>
@@ -118,5 +120,6 @@ export const WagerTransactionSchema: EntitySchema<WagerTransactionRecord> =
         columnType: "timestamptz",
         nullable: true,
       },
+      lockedBy: { type: "uuid", fieldName: "locked_by", nullable: true },
     },
   });

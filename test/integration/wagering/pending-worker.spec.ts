@@ -158,6 +158,23 @@ async function eventsOf(transactionId: string) {
   });
 }
 
+/** Eventos de uma mesma tentativa do worker (mesma causação, D18.3), em ordem. */
+async function eventsCausedBy(causationId: string) {
+  return withClient("app", async (client) => {
+    const { rows } = await client.query<{
+      event_type: string;
+      payload: { correlationId: string; causationId?: string };
+    }>(
+      `SELECT event_type, payload FROM outbox_messages
+        WHERE payload->>'causationId' = $1 ORDER BY position`,
+      [causationId],
+    );
+    return rows;
+  });
+}
+
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 describe("S5 R-07-20..22 D4.3: worker de pendentes", () => {
   it("R-07-20 D4.3 D4.6 D18.1: referência ainda ausente → continua PENDING_REFERENCE, attempts 1, backoff de 1 s, lease solto, sem evento novo", async () => {
     const wallet = await createWallet(api, brl("100.00"));
@@ -199,7 +216,9 @@ describe("S5 R-07-20..22 D4.3: worker de pendentes", () => {
     expect(events.map((event) => event.event_type)).toEqual(["WagerTransactionRejected"]);
     expect(events[0]?.payload.data.failureCode).toBe("REFERENCE_NOT_FOUND");
     expect(events[0]?.payload.correlationId).toStartWith("corr-seed-");
-    expect(events[0]?.payload.causationId).toBeDefined();
+    // Causação = um UUIDv7 por tentativa, não a correlação (D18.3).
+    expect(events[0]?.payload.causationId).toMatch(UUID_V7);
+    expect(events[0]?.payload.causationId).not.toBe(events[0]?.payload.correlationId as string);
     expect(await walletBalance(wallet.id)).toBe("100.00");
 
     const replay = await submit(api, seeded.body);
@@ -283,7 +302,7 @@ describe("S5 D4.4 D18.6: cutucada", () => {
     });
   });
 
-  it("D4.4 D18.6 D1.2: o worker resolve o REFUND pendente → o ROLLBACK pendente dele é cutucado e depois aplicado", async () => {
+  it("D4.4 D18.6 D1.2 D18.3: o worker resolve o REFUND pendente → o ROLLBACK pendente dele é cutucado e depois aplicado; cada tentativa tem a sua causação", async () => {
     const wallet = await createWallet(api, brl("100.00"));
     const betId = newExternalId("bet");
     const refund = await pendingSubmission(wallet, refundOf(betId));
@@ -306,6 +325,26 @@ describe("S5 D4.4 D18.6: cutucada", () => {
     expect((await pendingRow(rollback.id)).status).toBe("PROCESSED");
     // BET −10, REFUND +10, ROLLBACK do REFUND −10.
     expect(await walletBalance(wallet.id)).toBe("90.00");
+
+    // D18.3: os eventos do worker têm a causação da tentativa (UUIDv7),
+    // diferente da correlação; os da mesma tentativa compartilham a causação,
+    // e tentativas diferentes têm causações diferentes.
+    const byAttempt = async (id: string) => {
+      const processed = (await eventsOf(id)).filter(
+        (event) => event.event_type === "WagerTransactionProcessed",
+      );
+      expect(processed).toHaveLength(1);
+      const causation = processed[0]?.payload.causationId as string;
+      expect(causation).toMatch(UUID_V7);
+      const sameAttempt = await eventsCausedBy(causation);
+      expect(sameAttempt.map((event) => event.event_type)).toEqual([
+        "WagerTransactionProcessed",
+        "WalletBalanceChanged",
+      ]);
+      for (const event of sameAttempt) expect(event.payload.correlationId).not.toBe(causation);
+      return causation;
+    };
+    expect(await byAttempt(refund.id)).not.toBe((await byAttempt(rollback.id)) as string);
   });
 });
 

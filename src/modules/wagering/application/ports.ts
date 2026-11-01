@@ -13,10 +13,6 @@ export interface IdGenerator {
   next(): string;
 }
 
-export interface Clock {
-  now(): Date;
-}
-
 export interface WalletRepository {
   findById(id: string): Promise<Wallet | undefined>;
   /**
@@ -69,10 +65,14 @@ export interface WagerTransactionRepository {
   lockPending(id: string): Promise<LockedPending | undefined>;
   /**
    * Grava a decisão de uma pendente travada por `lockPending` (D4.5): o
-   * estado novo da entidade e as tentativas; solta o lease.
+   * estado novo da entidade e as tentativas; solta o lease e o dono
+   * (D18.10). `at` é o `now()` da transação (D18.12).
    */
-  resolve(tx: WagerTransaction, control: PendingControl): void;
-  /** A pendente travada continua pendente: tentativas, erros e próxima tentativa; solta o lease. */
+  resolve(tx: WagerTransaction, control: PendingControl, at: Date): void;
+  /**
+   * A pendente travada continua pendente: tentativas, erros e próxima
+   * tentativa; solta o lease e o dono (D18.10).
+   */
   reschedule(id: string, control: PendingControl & { nextAttemptAt: Date }): void;
   /**
    * "Cutucada" (D4.4, D18.6): as pendentes **da mesma wallet** que
@@ -95,22 +95,27 @@ export interface LockedPending {
   control: PendingControl;
   /** Da submissão original (D9.5). */
   correlationId: string | null;
+  /** Token do worker dono do lease (D18.10); `null` sem lease. */
+  lockedBy: string | null;
 }
 
 /** Pendente pega pelo claim do worker (D4.3, D18.2). */
 export interface ClaimedPending {
   id: string;
   walletId: string;
+  /** Token do worker que fez o claim, gravado em `locked_by` (D18.10). */
+  leaseToken: string;
 }
 
 /**
- * Claim do worker (D4.3, D18.2, D18.9): numa transação curta e commitada,
- * pega até `limit` pendentes vencidas e sem lease vigente com
- * `FOR UPDATE SKIP LOCKED`, marca o lease e devolve em ordem de
- * `next_attempt_at`, `created_at`. Nunca segura lock depois de voltar.
+ * Claim do worker (D4.3, D18.2, D18.9, D18.10): numa transação curta e
+ * commitada, pega até `limit` pendentes vencidas e sem lease vigente com
+ * `FOR UPDATE SKIP LOCKED`, marca o lease com o dono `leaseToken` e
+ * devolve em ordem de `next_attempt_at`, `created_at`. Nunca segura lock
+ * depois de voltar.
  */
 export interface PendingQueue {
-  claimDue(limit: number, leaseMs: number): Promise<ClaimedPending[]>;
+  claimDue(limit: number, leaseMs: number, leaseToken: string): Promise<ClaimedPending[]>;
 }
 
 export interface LedgerRepository {
@@ -141,6 +146,12 @@ export interface ReconciliationRunRepository {
 
 /** Repositórios presos a uma transação SQL aberta pelo use case. */
 export interface TransactionScope {
+  /**
+   * O `now()` da transação no banco: todo horário gravado vem dele
+   * (D18.12). É o mesmo relógio do claim e da cutucada, e o mesmo valor
+   * durante a transação inteira.
+   */
+  now(): Promise<Date>;
   wallets: WalletRepository;
   transactions: WagerTransactionRepository;
   ledger: LedgerRepository;
@@ -197,7 +208,6 @@ export interface OperationMeta {
 
 export const UNIT_OF_WORK = Symbol("UNIT_OF_WORK");
 export const ID_GENERATOR = Symbol("ID_GENERATOR");
-export const CLOCK = Symbol("CLOCK");
 export const RECONCILIATION_METRICS = Symbol("RECONCILIATION_METRICS");
 export const RECONCILIATION_LOG = Symbol("RECONCILIATION_LOG");
 export const SUBMISSION_METRICS = Symbol("SUBMISSION_METRICS");

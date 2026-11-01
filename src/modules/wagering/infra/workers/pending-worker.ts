@@ -30,6 +30,11 @@ const DEFAULT_OPTIONS: PendingWorkerOptions = {
  * Logs sem valores, saldos nem payload (D11.1).
  */
 export class PendingWorker {
+  /**
+   * Dono dos leases deste worker (D18.10): o claim grava em `locked_by`, e
+   * a tentativa pula a linha se ele já não for o dono.
+   */
+  readonly leaseToken = Bun.randomUUIDv7();
   private readonly options: PendingWorkerOptions;
   private running = false;
   private loop: Promise<void> | undefined;
@@ -47,7 +52,11 @@ export class PendingWorker {
 
   /** Um claim e as tentativas do lote. Devolve o que foi pego. */
   async runOnce(): Promise<ClaimedPending[]> {
-    const claimed = await this.queue.claimDue(this.options.batchSize, this.options.leaseMs);
+    const claimed = await this.queue.claimDue(
+      this.options.batchSize,
+      this.options.leaseMs,
+      this.leaseToken,
+    );
     for (const item of claimed) {
       // stop(): termina o item atual; os outros ficam com o lease, que vence (D18.8).
       if (this.loop !== undefined && !this.running) break;

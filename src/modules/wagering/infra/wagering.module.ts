@@ -7,8 +7,6 @@ import {
 } from "../../../shared/metrics/metrics";
 import { OpenWalletUseCase } from "../application/open-wallet.use-case";
 import {
-  CLOCK,
-  type Clock,
   ID_GENERATOR,
   type IdGenerator,
   RECONCILIATION_LOG,
@@ -52,9 +50,8 @@ import { WageringCoreModule } from "./wagering-core.module";
     },
     {
       provide: OpenWalletUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator, clock: Clock) =>
-        new OpenWalletUseCase(uow, ids, clock),
-      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator) => new OpenWalletUseCase(uow, ids),
+      inject: [UNIT_OF_WORK, ID_GENERATOR],
     },
     {
       provide: WalletQueries,
@@ -67,13 +64,9 @@ import { WageringCoreModule } from "./wagering-core.module";
     },
     {
       provide: SubmitWagerTransactionUseCase,
-      useFactory: (
-        uow: UnitOfWork,
-        ids: IdGenerator,
-        clock: Clock,
-        metrics: SubmissionMetrics,
-      ) => new SubmitWagerTransactionUseCase(uow, ids, clock, metrics),
-      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK, SUBMISSION_METRICS],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator, metrics: SubmissionMetrics) =>
+        new SubmitWagerTransactionUseCase(uow, ids, metrics),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, SUBMISSION_METRICS],
     },
     {
       provide: TransactionQueries,
@@ -85,14 +78,12 @@ import { WageringCoreModule } from "./wagering-core.module";
       useFactory: (
         uow: UnitOfWork,
         ids: IdGenerator,
-        clock: Clock,
         metrics: ReconciliationMetrics,
         log: ReconciliationLog,
-      ) => new ReconcileWalletUseCase(uow, ids, clock, metrics, log),
+      ) => new ReconcileWalletUseCase(uow, ids, metrics, log),
       inject: [
         UNIT_OF_WORK,
         ID_GENERATOR,
-        CLOCK,
         RECONCILIATION_METRICS,
         RECONCILIATION_LOG,
       ],

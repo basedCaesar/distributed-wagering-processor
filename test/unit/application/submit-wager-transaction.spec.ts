@@ -13,6 +13,7 @@ import {
   type SubmitWagerTransactionCommand,
   SubmitWagerTransactionUseCase,
 } from "../../../src/modules/wagering/application/submit-wager-transaction.use-case";
+import type { IntegrationEvent } from "../../../src/modules/wagering/domain/events/integration-event";
 import {
   WagerTransaction,
   WagerTransactionKind,
@@ -70,21 +71,37 @@ function winner(): WagerTransaction {
  * houver `commitFailures`. Depois da 1ª falha, a vencedora fica visível
  * se `winnerAfterFailure`.
  */
-function fakeUow(options: { commitFailures: number; winnerAfterFailure: boolean }) {
+function fakeUow(options: {
+  commitFailures: number;
+  winnerAfterFailure: boolean;
+  /** O `now()` da transação no banco (D18.12). */
+  dbNow?: Date;
+}) {
   let failuresLeft = options.commitFailures;
   let visible: WagerTransaction | undefined;
   const calls = { runs: 0 };
+  const written: { inserted: WagerTransaction[]; events: IntegrationEvent<unknown>[] } = {
+    inserted: [],
+    events: [],
+  };
   const scope = {
+    now: async () => options.dbNow ?? T0,
     wallets: { lockById: async () => wallet(), update: () => {} },
     transactions: {
       findByProviderAndKey: async () => visible,
       findByProviderAndExternalId: async () => undefined,
-      insert: () => {},
+      insert: (tx: WagerTransaction) => {
+        written.inserted.push(tx);
+      },
       // Porta nova da S5 (D4.4): a cutucada não muda nada neste fake.
       nudgeDependents: async () => {},
     },
     ledger: { insert: () => {} },
-    outbox: { append: () => {} },
+    outbox: {
+      append: (events: readonly IntegrationEvent<unknown>[]) => {
+        written.events.push(...events);
+      },
+    },
   } as unknown as TransactionScope;
   const uow: UnitOfWork = {
     async run(work) {
@@ -98,7 +115,7 @@ function fakeUow(options: { commitFailures: number; winnerAfterFailure: boolean 
       return result;
     },
   };
-  return { uow, calls };
+  return { uow, calls, written };
 }
 
 function useCaseWith(uow: UnitOfWork) {
@@ -107,7 +124,6 @@ function useCaseWith(uow: UnitOfWork) {
   const useCase = new SubmitWagerTransactionUseCase(
     uow,
     { next: () => `0192f2a0-0000-7000-8000-${String(++sequence).padStart(12, "0")}` },
-    { now: () => T0 },
     { countDuplicate: (layer) => counted.push(layer) },
   );
   return { useCase, counted };
@@ -157,5 +173,21 @@ describe("D3.6 D17.6: barreira do UNIQUE na submissão", () => {
 
     expect(result.idempotentReplay).toBe(true);
     expect(counted).toEqual(["fast_path"]);
+  });
+});
+
+describe("D18.12: relógio da submissão", () => {
+  it("D18.12: createdAt, processedAt e occurredAt dos eventos vêm do now() da transação (scope)", async () => {
+    const dbNow = new Date(T0.getTime() + 7_000);
+    const { uow, written } = fakeUow({ commitFailures: 0, winnerAfterFailure: false, dbNow });
+    const { useCase } = useCaseWith(uow);
+
+    const result = await useCase.execute(command, meta);
+
+    expect(result.transaction.createdAt).toEqual(dbNow);
+    expect(result.transaction.processedAt).toEqual(dbNow);
+    expect(written.inserted.map((tx) => tx.createdAt)).toEqual([dbNow]);
+    expect(written.events.length).toBeGreaterThan(0);
+    for (const event of written.events) expect(event.occurredAt).toEqual(dbNow);
   });
 });

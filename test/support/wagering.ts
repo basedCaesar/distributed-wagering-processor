@@ -137,6 +137,23 @@ export async function holdWalletLock(walletId: string): Promise<WalletLock> {
 }
 
 /**
+ * Início da transação (`xact_start`, o que o `now()` dela devolve) das
+ * sessões bloqueadas **diretamente** pela sessão `holderPid`. Serve para
+ * provar que o horário gravado é o `now()` da transação no banco (D18.12).
+ */
+export async function transactionStartsBlockedBy(
+  observer: Client,
+  holderPid: number,
+): Promise<Date[]> {
+  const { rows } = await observer.query<{ xact_start: Date }>(
+    `SELECT xact_start FROM pg_stat_activity
+      WHERE $1 = ANY(pg_blocking_pids(pid)) AND xact_start IS NOT NULL`,
+    [holderPid],
+  );
+  return rows.map((row) => row.xact_start);
+}
+
+/**
  * Prazo da espera pelos waiters: abaixo do `lock_timeout` de 2 s (D5), para
  * o primeiro waiter não desistir com `503` antes de o teste soltar o lock.
  */

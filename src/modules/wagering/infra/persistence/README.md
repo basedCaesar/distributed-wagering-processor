@@ -10,8 +10,8 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 | `*.mapper.ts`                           | Domínio ↔ record. Leitura sempre por `rehydrate` (R-06-03). `undefined` vira `null`. `PENDING` não vira record (D4.1).                                      | D4.1, D6.1, D14.5 |
 | `index.ts`                              | `WAGERING_ENTITIES`, a lista registrada no ORM.                                                                                                             |                   |
 | `outbox-message.schema.ts`, `reconciliation-run.schema.ts` | Linhas que o use case grava na outbox (sem `position`, que é identity, e sem as colunas do publisher) e nas execuções de reconciliação. | D6.9, D9.2, D9.3 |
-| `pending-queue.ts`                      | `PendingQueue` da `application/`: o claim do worker de pendentes (ver abaixo). | D4.3, D18.2, D18.9 |
-| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. `lockById` é `SELECT … FOR UPDATE` (`LockMode.PESSIMISTIC_WRITE`); `update` grava saldo, `version` e `updatedAt` no record já travado. Um `UNIQUE` de key ou de id externo violado no commit vira `DuplicateTransactionError` (D3.6). `findReference` calcula `alreadyReversed` = existe `REFUND`/`ROLLBACK` `PROCESSED` com `reference_transaction_id` = a referência (D1.1, D1.3). | D3, D6.3, D7.1, D7.2 |
+| `pending-queue.ts`                      | `PendingQueue` da `application/`: o claim do worker de pendentes (ver abaixo). | D4.3, D18.2, D18.9, D18.10 |
+| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. `now()` é o `now()` da transação no Postgres, devolvido em ISO UTC com milissegundos (o MikroORM troca os parsers do `pg`, e um `timestamptz` cru chegaria como string); todo horário gravado vem dele (D18.12). O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. `lockById` é `SELECT … FOR UPDATE` (`LockMode.PESSIMISTIC_WRITE`); `update` grava saldo, `version` e `updatedAt` no record já travado. Um `UNIQUE` de key ou de id externo violado no commit vira `DuplicateTransactionError` (D3.6). `findReference` calcula `alreadyReversed` = existe `REFUND`/`ROLLBACK` `PROCESSED` com `reference_transaction_id` = a referência (D1.1, D1.3). | D3, D6.3, D7.1, D7.2 |
 | `src/shared/orm/decimal-amount.type.ts` | Tipo customizado: `numeric(20,2)` ↔ string; um `number` em qualquer direção lança erro.                                                                     | D2.4, D7.1        |
 | `src/shared/orm/fk-id.ts`               | FK mapeada como id (string), declarada `m:1` só para o flush inserir wallet → transação → lançamento nessa ordem.                                           |                   |
 | `src/shared/orm/create-orm.ts`          | `MikroORM.init` com `lock_timeout` 2 s e `statement_timeout` 5 s em toda conexão.                                                                           | D5                |
@@ -19,9 +19,9 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 
 Nenhum schema usa `version: true`: a `version` da wallet sobe só em `Wallet.debit`/`credit` (D7.2). A segunda camada é do banco: `UNIQUE (wallet_id, wallet_version)` + trigger de cauda (D15.7).
 
-As colunas de controle do worker (`attempts`, `consecutive_errors`, `next_attempt_at`, `locked_until`) estão no record, mas fora da entidade (D4.5, D18.1). O repositório grava `created_at` em `next_attempt_at` quando a transação nasce `PENDING_REFERENCE`, então ela já entra vencida no claim (D17.4). Para o worker:
-- `pending-queue.ts`: o claim, um comando só (CTE `SELECT … FOR UPDATE SKIP LOCKED` + `UPDATE … RETURNING`). Pega as vencidas e sem lease vigente, marca `locked_until = now() + 30 s` e devolve em ordem de `next_attempt_at`, `created_at`, `id` (D18.2, D18.9). Usa o índice `wager_transactions_pending_due_ix`;
-- `lockPending`: `SELECT … FOR UPDATE` da linha, só depois do lock da wallet. `resolve` grava o estado novo e as tentativas e solta o lease; `reschedule` grava as tentativas e a próxima e solta o lease;
+As colunas de controle do worker (`attempts`, `consecutive_errors`, `next_attempt_at`, `locked_until`, `locked_by`) estão no record, mas fora da entidade (D4.5, D18.1, D18.10). O repositório grava `created_at` em `next_attempt_at` quando a transação nasce `PENDING_REFERENCE`, então ela já entra vencida no claim (D17.4). Para o worker:
+- `pending-queue.ts`: o claim, um comando só (CTE `SELECT … FOR UPDATE SKIP LOCKED` + `UPDATE … RETURNING`). Pega as vencidas e sem lease vigente, marca `locked_until = now() + 30 s` e `locked_by` = o token do worker, e devolve em ordem de `next_attempt_at`, `created_at`, `id` (D18.2, D18.9, D18.10). Usa o índice `wager_transactions_pending_due_ix`;
+- `lockPending`: `SELECT … FOR UPDATE` da linha, só depois do lock da wallet, com o `locked_by` para o use case conferir o dono. `resolve` grava o estado novo e as tentativas e solta o lease e o dono; `reschedule` grava as tentativas e a próxima e solta o lease e o dono;
 - `nudgeDependents`: `UPDATE … SET next_attempt_at = now()` nas pendentes da mesma wallet que referenciam a transação, com `SKIP LOCKED` (D4.4, D18.6). Usa o índice `wager_transactions_pending_by_reference_ix`.
 
 O `correlation_id` (D9.5) **não** é coluna de controle: é o rastreio da submissão. Ele está no record, mas não na entidade: o repositório o recebe ao salvar e o passa ao `wagerTransactionToRecord`. É gravado no `INSERT` e imutável depois (trigger `wager_transactions_guard_update`).
@@ -67,6 +67,7 @@ erDiagram
         int consecutive_errors "controle do worker (D18.1)"
         timestamptz next_attempt_at "controle do worker"
         timestamptz locked_until "lease do claim"
+        uuid locked_by "dono do lease (D18.10)"
         text correlation_id "D9.5; imutável após o INSERT"
     }
     wallet_ledger_entries {

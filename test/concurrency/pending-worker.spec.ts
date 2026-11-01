@@ -4,16 +4,20 @@ import { startTestApi, type TestApi } from "../support/api";
 import { connect } from "../support/db";
 import { expectLedgerMatchesBalances } from "../support/db-ledger-invariant";
 import { transactionRow, writeMovement } from "../support/db-seed";
+import type { ClaimedPending } from "../../src/modules/wagering/application/ports";
 import {
   brl,
   createWallet,
+  holdWalletLock,
   newExternalId,
   submit,
   type TestWallet,
+  transactionStartsBlockedBy,
   waitForWalletLockWaiters,
   wagerBody,
 } from "../support/wagering";
 import {
+  parkAllPendings,
   parkPendings,
   pendingRow,
   runWorkerUntil,
@@ -66,7 +70,8 @@ const reversalOf = (kind: "REFUND" | "ROLLBACK", externalTransactionId: string) 
  */
 async function moveToFront(ids: string[]): Promise<void> {
   await db.query(
-    `UPDATE wager_transactions SET next_attempt_at = timestamptz '2000-01-01', locked_until = NULL
+    `UPDATE wager_transactions
+        SET next_attempt_at = timestamptz '2000-01-01', locked_until = NULL, locked_by = NULL
       WHERE id = ANY($1)`,
     [ids],
   );
@@ -92,6 +97,9 @@ async function msUntilStatus(transactionId: string, status: string, deadlineMs: 
 describe("S5 R-13-C7 D4.4: reversão antes da referência, com o processo pending-worker rodando", () => {
   for (const kind of ["REFUND", "ROLLBACK"] as const) {
     it(`R-13-C7 D4.3 D4.4: ${kind} antes da BET → 202, já com 3 tentativas (backoff de 4 s); depois a BET → o ${kind} é aplicado em cerca de 1 s`, async () => {
+      // O worker em laço pega qualquer pendente vencida do banco: as de
+      // outros arquivos e rodadas não podem ficar na frente do que se mede.
+      await parkAllPendings(db);
       const wallet = await createWallet(api, brl("100.00"));
       const betId = newExternalId("bet");
       const reversal = await pendingSubmission(wallet, reversalOf(kind, betId));
@@ -156,24 +164,32 @@ describe("S5 D1.1 D1.3 D18.9: duas reversões pendentes da mesma BET", () => {
     expect(rows[0]?.credits).toBe(1);
   });
 
-  it("D1.1 D7.2 D18.7: as duas reversões pegas por dois workers ao mesmo tempo → só uma aplicada", async () => {
+  it("D1.1 D7.2 D18.7: as duas reversões pegas por dois workers, os dois esperando o lock da wallet (pg_locks) → só uma aplicada, uma tentativa cada, um crédito", async () => {
     const wallet = await createWallet(api, brl("100.00"));
     const betId = newExternalId("bet");
     const reversals = await Promise.all([
       pendingSubmission(wallet, reversalOf("REFUND", betId)),
       pendingSubmission(wallet, reversalOf("ROLLBACK", betId)),
     ]);
-    await submit(api, wagerBody(wallet, { externalTransactionId: betId, money: brl("10.00") }));
+    const bet = await submit(api, wagerBody(wallet, { externalTransactionId: betId, money: brl("10.00") }));
+    expect(bet.status).toBe(200);
     const ids = reversals.map((reversal) => reversal.id);
     await moveToFront(ids);
-    // Lote de 1: cada worker pega uma reversão, e as duas disputam a wallet.
+    // Lote de 1: cada worker pega uma reversão. A wallet fica travada até
+    // os dois estarem na fila do lock, e só então a corrida começa.
     const workers = await Promise.all([startTestWorker({ batchSize: 1 }), startTestWorker({ batchSize: 1 })]);
+    const lock = await holdWalletLock(wallet.id);
     let claimed: string[];
     try {
-      claimed = (await Promise.all(workers.map((worker) => worker.runOnce())))
-        .flat()
-        .map((item) => item.id);
+      const rounds = workers.map((worker) => worker.runOnce());
+      try {
+        await waitForWalletLockWaiters(observer, lock, 2);
+      } finally {
+        await lock.release();
+      }
+      claimed = (await Promise.all(rounds)).flat().map((item) => item.id);
     } finally {
+      await lock.release();
       await Promise.all(workers.map((worker) => worker.close()));
     }
 
@@ -181,6 +197,13 @@ describe("S5 D1.1 D1.3 D18.9: duas reversões pendentes da mesma BET", () => {
     const rows = await Promise.all(ids.map((id) => pendingRow(id)));
     expect(rows.map((row) => row.status).sort()).toEqual(["PROCESSED", "REJECTED"]);
     expect(rows.find((row) => row.status === "REJECTED")?.failure_code).toBe("REFERENCE_ALREADY_REVERSED");
+    expect(rows.map((row) => row.attempts)).toEqual([1, 1]);
+    const { rows: credits } = await db.query<{ credits: number }>(
+      `SELECT count(*)::int AS credits FROM wallet_ledger_entries
+        WHERE wallet_id = $1 AND direction = 'CREDIT' AND wallet_version > 1`,
+      [wallet.id],
+    );
+    expect(credits[0]?.credits).toBe(1);
   });
 });
 
@@ -205,7 +228,7 @@ describe("S5 D4.3 D18.2 D18.7: claim com SKIP LOCKED e lease", () => {
       expect(locked.rowCount).toBe(mine.length);
 
       // Sem SKIP LOCKED, este claim esperaria o holder até o lock_timeout (2 s) e falharia com 55P03.
-      const claimedByB = await workerB.queue.claimDue(10, 30_000);
+      const claimedByB = await workerB.queue.claimDue(10, 30_000, workerB.worker.leaseToken);
       expect(claimedByB.filter((item) => mine.includes(item.id))).toEqual([]);
     } finally {
       await holder.query("ROLLBACK");
@@ -214,14 +237,18 @@ describe("S5 D4.3 D18.2 D18.7: claim com SKIP LOCKED e lease", () => {
 
     try {
       await moveToFront(mine);
-      const claimedByB = (await workerB.queue.claimDue(10, 30_000)).filter((item) => mine.includes(item.id));
+      const claimedByB = (await workerB.queue.claimDue(10, 30_000, workerB.worker.leaseToken)).filter(
+        (item) => mine.includes(item.id),
+      );
       expect(claimedByB.map((item) => item.id).sort()).toEqual([...mine].sort());
       // Lease vigente: mesmo vencidas, ninguém mais as pega (D18.2).
       await db.query("UPDATE wager_transactions SET next_attempt_at = now() WHERE id = ANY($1)", [mine]);
-      const claimedByC = await workerC.queue.claimDue(10, 30_000);
+      const claimedByC = await workerC.queue.claimDue(10, 30_000, workerC.worker.leaseToken);
       expect(claimedByC.filter((item) => mine.includes(item.id))).toEqual([]);
       for (const id of mine) {
-        expect((await pendingRow(id)).locked_until?.getTime()).toBeGreaterThan(Date.now());
+        const row = await pendingRow(id);
+        expect(row.locked_until?.getTime()).toBeGreaterThan(Date.now());
+        expect(row.locked_by).toBe(workerB.worker.leaseToken);
       }
     } finally {
       // As linhas ficam com o lease de B: não sobram na frente para o próximo teste.
@@ -285,7 +312,7 @@ describe("S5 D4.4 D7.2: cutucada e locks", () => {
     expect(rows[0]?.due).toBe(false);
   });
 
-  it("D4.3 D7.2: com a wallet travada por uma submissão em andamento, o worker espera o lock (pg_locks), relê e aplica a BET que ela gravou", async () => {
+  it("D4.3 D7.2 D18.12: com a wallet travada por uma submissão em andamento, o worker espera o lock (pg_locks), relê e aplica a BET que ela gravou; o processed_at é o now() da transação do worker", async () => {
     const wallet = await createWallet(api, brl("100.00"));
     const betId = newExternalId("bet");
     const pending = await pendingSubmission(wallet, reversalOf("REFUND", betId));
@@ -295,13 +322,16 @@ describe("S5 D4.4 D7.2: cutucada e locks", () => {
     // A "submissão" da BET: trava a wallet e grava, sem commitar ainda.
     const holder = await connect("app");
     let round: Promise<unknown> | undefined;
+    let workerTransactionStart: Date | undefined;
     try {
       await holder.query("BEGIN");
       await holder.query("SELECT 1 FROM wallets WHERE id = $1 FOR UPDATE", [wallet.id]);
       const { rows } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const holderPid = rows[0]?.pid as number;
 
       round = worker.runOnce();
-      await waitForWalletLockWaiters(observer, { pid: rows[0]?.pid as number, walletId: wallet.id }, 1);
+      await waitForWalletLockWaiters(observer, { pid: holderPid, walletId: wallet.id }, 1);
+      [workerTransactionStart] = await transactionStartsBlockedBy(observer, holderPid);
 
       const bet = transactionRow(
         { id: wallet.id, playerId: wallet.playerId, currency: "BRL" },
@@ -330,6 +360,85 @@ describe("S5 D4.4 D7.2: cutucada e locks", () => {
       await worker.close();
     }
 
-    expect(await pendingRow(pending.id)).toMatchObject({ status: "PROCESSED", attempts: 1 });
+    const row = await pendingRow(pending.id);
+    expect(row).toMatchObject({ status: "PROCESSED", attempts: 1 });
+    // A transação do worker começou antes de esperar o lock; um relógio da
+    // aplicação, lido depois do lock, daria um horário posterior (D18.12).
+    expect(workerTransactionStart).toBeDefined();
+    expect(row.processed_at?.getTime()).toBe(workerTransactionStart?.getTime() as number);
+  });
+});
+
+describe("S5 D18.10: dono do lease", () => {
+  it("D18.10 D4.3: o lease vence com o item em processamento (worker A esperando a wallet), o worker B reclama; A pula sem contar tentativa nem erro, B tenta uma vez", async () => {
+    const wallet = await createWallet(api, brl("100.00"));
+    // Sem BET: quem chegar à linha só pode reagendar (attempts + 1).
+    const pending = await pendingSubmission(wallet, reversalOf("REFUND", newExternalId("bet")));
+    await moveToFront([pending.id]);
+    const [workerA, workerB] = await Promise.all([
+      startTestWorker({ batchSize: 1 }),
+      startTestWorker({ batchSize: 1 }),
+    ]);
+    const lock = await holdWalletLock(wallet.id);
+    let roundA: Promise<ClaimedPending[]> | undefined;
+    let roundB: Promise<ClaimedPending[]> | undefined;
+    try {
+      try {
+        roundA = workerA.runOnce();
+        await waitForWalletLockWaiters(observer, lock, 1);
+        expect((await pendingRow(pending.id)).locked_by).toBe(workerA.worker.leaseToken);
+
+        // O lease de A vence com A ainda esperando a wallet (só colunas de controle).
+        await db.query(
+          "UPDATE wager_transactions SET locked_until = now() - interval '1 second' WHERE id = $1",
+          [pending.id],
+        );
+        roundB = workerB.runOnce();
+        await waitForWalletLockWaiters(observer, lock, 2);
+        expect((await pendingRow(pending.id)).locked_by).toBe(workerB.worker.leaseToken);
+      } finally {
+        await lock.release();
+      }
+      const [claimedA, claimedB] = await Promise.all([roundA, roundB]);
+      expect(claimedA?.map((item) => item.id)).toEqual([pending.id]);
+      expect(claimedB?.map((item) => item.id)).toEqual([pending.id]);
+    } finally {
+      await Promise.all([workerA.close(), workerB.close()]);
+    }
+
+    // Sem a checagem do dono, A também reagendaria: attempts = 2.
+    expect(await pendingRow(pending.id)).toMatchObject({
+      status: "PENDING_REFERENCE",
+      attempts: 1,
+      consecutive_errors: 0,
+      locked_until: null,
+      locked_by: null,
+    });
+  });
+});
+
+describe("S5 D18.12: relógio do banco na submissão", () => {
+  it("D18.12: created_at e processed_at de uma BET são o now() da transação da submissão, que começou antes de esperar o lock", async () => {
+    const wallet = await createWallet(api, brl("100.00"));
+    const lock = await holdWalletLock(wallet.id);
+    let response: ReturnType<typeof submit> | undefined;
+    let submissionStart: Date | undefined;
+    try {
+      response = submit(api, wagerBody(wallet, { money: brl("10.00") }));
+      await waitForWalletLockWaiters(observer, lock, 1);
+      [submissionStart] = await transactionStartsBlockedBy(observer, lock.pid);
+    } finally {
+      await lock.release();
+    }
+    const result = await response;
+    expect(result?.status).toBe(200);
+
+    const { rows } = await db.query<{ created_at: Date; processed_at: Date }>(
+      "SELECT created_at, processed_at FROM wager_transactions WHERE id = $1",
+      [result?.body.transactionId],
+    );
+    expect(submissionStart).toBeDefined();
+    expect(rows[0]?.created_at.getTime()).toBe(submissionStart?.getTime() as number);
+    expect(rows[0]?.processed_at.getTime()).toBe(submissionStart?.getTime() as number);
   });
 });
