@@ -15,6 +15,7 @@ import {
 } from "../../../src/modules/wagering/domain/wager-transaction";
 import {
   applyWagerTransaction,
+  expirePendingReference,
   openWallet,
 } from "../../../src/modules/wagering/domain/wager-transaction-rules";
 import { LedgerDirection } from "../../../src/modules/wagering/domain/wallet-ledger-entry";
@@ -979,5 +980,58 @@ describe("Invariante sob qualquer sequência (propriedade)", () => {
       }),
       { numRuns: 200 },
     );
+  });
+});
+
+describe("expirePendingReference (R-07-22, D4.3)", () => {
+  it("R-07-22 D4.3: pendente expirada → REJECTED REFERENCE_NOT_FOUND com o saldo atual, sem lançamento", () => {
+    const { tx } = book.submit({
+      kind: Refund,
+      money: brl("10.00"),
+      referenceExternalTransactionId: "bet-never",
+    });
+
+    const outcome = expirePendingReference(book.wallet(), tx);
+
+    expect(outcome).toEqual({
+      status: Rejected,
+      failureCode: FailureCode.ReferenceNotFound,
+    });
+    expect(tx.status).toBe(Rejected);
+    expect(tx.failureCode).toBe(FailureCode.ReferenceNotFound);
+    expect(tx.balanceAfter?.toString()).toBe("100.00");
+    expect(balance()).toBe("100.00");
+    expect(version()).toBe(1);
+    expectLedgerMatchesBalances(...book.books());
+  });
+
+  it("D4.5: expirar uma transação que não está PENDING_REFERENCE lança e não muda nada", () => {
+    const placed = bet("10.00", "bet-1");
+    const fresh = WagerTransaction.create(
+      submissionProps({ kind: Refund, referenceExternalTransactionId: "x" }),
+    );
+
+    expect(() => expirePendingReference(book.wallet(), placed.tx)).toThrow(
+      InvalidTransactionStateError,
+    );
+    expect(() => expirePendingReference(book.wallet(), fresh)).toThrow(
+      InvalidTransactionStateError,
+    );
+    expect(placed.tx.status).toBe(Processed);
+    expect(fresh.status).toBe(WagerTransactionStatus.Pending);
+  });
+
+  it("D4.5: pendente de outra wallet → lança", () => {
+    book.openWallet("wallet-2", "player-2", brl("50.00"));
+    const { tx } = book.submit({
+      kind: Refund,
+      money: brl("10.00"),
+      referenceExternalTransactionId: "bet-never",
+    });
+
+    expect(() => expirePendingReference(book.wallet("wallet-2"), tx)).toThrow(
+      InvalidWalletOperationError,
+    );
+    expect(tx.status).toBe(PendingReference);
   });
 });

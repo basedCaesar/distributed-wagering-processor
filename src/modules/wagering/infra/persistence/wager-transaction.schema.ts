@@ -6,9 +6,9 @@ import { WalletSchema } from "./wallet.schema";
 /**
  * Linha de `wager_transactions`. Os campos do provedor são nulos na
  * `OPENING` (D6.1, D14.5). As colunas de controle do worker ficam fora da
- * entidade (D4.5). Só `next_attempt_at` é mapeada, para a pendente nascer
- * já vencida (D17.4); `attempts` e `locked_until` o worker (S5) lê e
- * escreve por SQL próprio, e o banco as preenche com o default.
+ * entidade (D4.5): o record as tem, o mapper da entidade não. O claim
+ * (`locked_until`) e a cutucada (`next_attempt_at`) são SQL próprio
+ * (`pending-queue.ts`, `nudgeDependents`).
  */
 export interface WagerTransactionRecord {
   id: string;
@@ -41,6 +41,12 @@ export interface WagerTransactionRecord {
   correlationId: string | null;
   /** Controle do worker (D4.3), fora da entidade; o repositório preenche (D17.4). */
   nextAttemptAt?: Date | null;
+  /** Toda tentativa do worker (D4.3). */
+  attempts?: number;
+  /** Erros seguidos do worker (D4.2, D18.1). */
+  consecutiveErrors?: number;
+  /** Lease do claim (D4.3, D18.2). */
+  lockedUntil?: Date | null;
 }
 
 const nullableText = (fieldName: string) =>
@@ -100,6 +106,15 @@ export const WagerTransactionSchema: EntitySchema<WagerTransactionRecord> =
       nextAttemptAt: {
         type: "datetime",
         fieldName: "next_attempt_at",
+        columnType: "timestamptz",
+        nullable: true,
+      },
+      // `DEFAULT 0` no banco: um INSERT sem elas fica com 0 (D18.1).
+      attempts: { type: "integer", default: 0 },
+      consecutiveErrors: { type: "integer", fieldName: "consecutive_errors", default: 0 },
+      lockedUntil: {
+        type: "datetime",
+        fieldName: "locked_until",
         columnType: "timestamptz",
         nullable: true,
       },

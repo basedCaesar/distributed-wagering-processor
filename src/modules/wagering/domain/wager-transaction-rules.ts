@@ -214,6 +214,27 @@ function scopeMismatch(
   return undefined;
 }
 
+/**
+ * Prazo da pendência esgotado (R-07-22, D4.3): `REJECTED` com
+ * `REFERENCE_NOT_FOUND` e o saldo atual da wallet travada. Só a partir de
+ * `PENDING_REFERENCE`; quem decide que o prazo passou é o worker, depois de
+ * reavaliar a referência (D18.5).
+ */
+export function expirePendingReference(
+  wallet: Wallet,
+  tx: WagerTransaction,
+): WagerTransactionOutcome {
+  if (tx.status !== WagerTransactionStatus.PendingReference) {
+    throw new InvalidTransactionStateError(
+      `Só uma PENDING_REFERENCE expira: ${tx.status}`,
+    );
+  }
+  if (tx.walletId !== wallet.id) {
+    throw new InvalidWalletOperationError("Transação de outra wallet");
+  }
+  return reject(wallet, tx, FailureCode.ReferenceNotFound);
+}
+
 /** Rejeição não muda saldo nem gera lançamento (R-07-11). */
 function reject(
   wallet: Wallet,

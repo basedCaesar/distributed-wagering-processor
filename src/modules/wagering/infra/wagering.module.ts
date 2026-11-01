@@ -1,5 +1,4 @@
 import { Module } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
 import type { Logger } from "pino";
 import { LOGGER } from "../../../shared/logger/logger.module";
 import {
@@ -32,25 +31,16 @@ import {
   PromReconciliationMetrics,
 } from "./observability/reconciliation-reporting";
 import { PromSubmissionMetrics } from "./observability/submission-metrics";
-import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
+import { WageringCoreModule } from "./wagering-core.module";
 
 /**
  * Contexto `wagering` no processo `api`. Os use cases são classes puras da
  * `application/`; aqui só se escolhem os adaptadores.
  */
 @Module({
+  imports: [WageringCoreModule],
   controllers: [WalletsController, WagerTransactionsController],
   providers: [
-    {
-      provide: UNIT_OF_WORK,
-      useFactory: (orm: MikroORM) => new MikroOrmUnitOfWork(orm),
-      inject: [MikroORM],
-    },
-    {
-      provide: ID_GENERATOR,
-      useValue: { next: () => Bun.randomUUIDv7() } satisfies IdGenerator,
-    },
-    { provide: CLOCK, useValue: { now: () => new Date() } satisfies Clock },
     {
       provide: RECONCILIATION_METRICS,
       useValue: new PromReconciliationMetrics(reconciliationDivergencesTotal),

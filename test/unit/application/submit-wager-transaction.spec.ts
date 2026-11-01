@@ -80,6 +80,8 @@ function fakeUow(options: { commitFailures: number; winnerAfterFailure: boolean 
       findByProviderAndKey: async () => visible,
       findByProviderAndExternalId: async () => undefined,
       insert: () => {},
+      // Porta nova da S5 (D4.4): a cutucada não muda nada neste fake.
+      nudgeDependents: async () => {},
     },
     ledger: { insert: () => {} },
     outbox: { append: () => {} },

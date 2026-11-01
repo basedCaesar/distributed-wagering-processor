@@ -9,7 +9,7 @@ Critérios, em ordem:
 4. não inventar regra que o enunciado não pede;
 5. preferir a opção mais simples entre as corretas.
 
-**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada. D13 aprovada em 30/10/2026, junto com o ajuste da D11.5 (detalhe de cada parte no README dela). D14 aprovada em 30/10/2026. D15 aprovada em 30/10/2026, junto com a criação dos papéis do banco no init do Postgres (as migrations só dão os `GRANT`s). D15.9 e o ajuste da D15.5 (trigger de `INSERT` do `FAILED`) aprovados em 30/10/2026, na correção da revisão da S2. D15.10 e D16 aprovadas em 31/10/2026, no plano da S3 (16.4 com `500` para o `PROCESSING_FAILED`). D16.9–16.16 aprovadas em 31/10/2026, na correção da revisão da S3. D17 aprovada em 31/10/2026, no plano da S4. D17.6 e D17.7 aprovadas em 01/11/2026, na correção da revisão da S4 (D1.7 fica para a S9).
+**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada. D13 aprovada em 30/10/2026, junto com o ajuste da D11.5 (detalhe de cada parte no README dela). D14 aprovada em 30/10/2026. D15 aprovada em 30/10/2026, junto com a criação dos papéis do banco no init do Postgres (as migrations só dão os `GRANT`s). D15.9 e o ajuste da D15.5 (trigger de `INSERT` do `FAILED`) aprovados em 30/10/2026, na correção da revisão da S2. D15.10 e D16 aprovadas em 31/10/2026, no plano da S3 (16.4 com `500` para o `PROCESSING_FAILED`). D16.9–16.16 aprovadas em 31/10/2026, na correção da revisão da S3. D17 aprovada em 31/10/2026, no plano da S4. D17.6 e D17.7 aprovadas em 01/11/2026, na correção da revisão da S4 (D1.7 fica para a S9). D18 aprovada em 01/11/2026, no plano da S5.
 
 ---
 
@@ -360,6 +360,23 @@ Pontos que o plano da S4 encontrou abertos. Cada um complementa a decisão citad
 | 17.7 | Complementa D11.2 ("duplicatas por camada"). Contador `wagering_duplicates_total{layer}`, com `layer` = `fast_path` (checagem rápida), `lock` (checagem autoritativa sob o lock) ou `unique_index` (o `UNIQUE` barrou o commit; a repetição que vem depois não conta de novo). Contado já na S4; o `/metrics` continua na S9. A inbox ganha a sua camada na S6. | Prova que as duplicatas simultâneas param no lock, não no índice: nas 50 em paralelo, `fast_path + lock = 49` e `unique_index = 0`. Sem isso, o retry da D3.6 esconderia uma checagem fora do lock. | Inferir pelo status HTTP: o retry devolve o mesmo `200`. |
 
 Detalhes seguidos na S4 sem regra nova: `Idempotency-Key` vazia conta como ausente (`400`); campos extras do corpo são descartados, como no `POST /wallets`; ordem na borda: guard (`401`; `403` para quem não é `provider`) → schema (`400`) → `providerId` do corpo ≠ token (`403`) → use case; a checagem rápida da key (antes do lock) vem antes da busca da wallet; a referência não é travada, porque uma referência válida é da wallet já travada (D14.2: escopo antes de estado).
+
+---
+
+## D18 — Detalhes do worker de pendentes (S5)
+Pontos que o plano da S5 encontrou abertos. Cada um complementa a decisão citada.
+
+| # | Decisão | Por quê | Alternativa descartada |
+|---|---|---|---|
+| 18.1 | Complementa D4.2 e D4.3. Coluna nova `consecutive_errors` (`int NOT NULL DEFAULT 0`, `>= 0`), em migration própria. `attempts` conta **toda** tentativa e define o backoff; `consecutive_errors` conta os erros seguidos e volta a 0 numa tentativa sem erro. | O backoff da D4.3 conta tentativas, inclusive as que terminam "ainda pendente"; os "5 erros seguidos" da D4.2 são outra contagem. | Backoff pelo tempo desde a criação: deixa de ser "dobrando" como a D4.3 descreve. |
+| 18.2 | Complementa D4.3. Lease de 30 s (como o publisher, D9.6) e lote de 10. O claim usa o `now()` do banco e pula linhas com lease vigente (`locked_until > now()`). | Com lote 10 e `lock_timeout` de 2 s por item, o pior caso (~20 s) cabe no lease. O relógio do banco é o mesmo para todas as instâncias. | Lote de 50: o pior caso passaria do lease. |
+| 18.3 | Complementa D9.5. Nos eventos do worker, `causationId` = um UUIDv7 por tentativa; `correlationId` = a coluna `correlation_id` da submissão original. | Cada tentativa é um comando próprio; a operação continua rastreável pela correlação. | Usar o id da transação como causação: não distingue as tentativas. |
+| 18.4 | Complementa D4.2. Erro `transient` no `classifyError()` → `attempts + 1` e backoff, sem contar erro. Qualquer outra categoria → `attempts + 1`, `consecutive_errors + 1` e backoff. No 5º erro seguido, uma transação própria trava a wallet e a linha, relê e, se ainda pendente, grava `fail(PROCESSING_FAILED)`, o evento `WagerTransactionFailed` e a cutucada. | "Não de negócio e não transitório" (D4.2). Transitório resolve sozinho e não é culpa da transação. | Contar transitórios: um Postgres instável marcaria pendentes saudáveis como `FAILED`. |
+| 18.5 | Complementa D4.3. A tentativa avalia primeiro e só expira se a decisão ainda for esperar (referência ausente ou pendente). O `next_attempt_at` nunca passa de `created_at + 15 min`. | Uma referência que chegou no fim do prazo é aplicada; a expiração acontece no prazo, não até 60 s depois. | Expirar sem avaliar: rejeita uma transação que já podia ser aplicada. |
+| 18.6 | Complementa D4.4. A cutucada acontece em toda transição para terminal, na submissão e no worker (cadeia `BET ← REFUND ← ROLLBACK` pendentes). Só põe `next_attempt_at = now()`, sem mexer em tentativas nem lease, com `SKIP LOCKED`. | "Chega a um estado terminal" vale também para uma pendente resolvida pelo worker. | Cutucar só na submissão: o elo seguinte da cadeia esperaria o backoff. |
+| 18.7 | Complementa D7.4. Na S5, "dois workers" são duas instâncias no processo de teste, cada uma com seu MikroORM e seu pool. Processos separados ficam para a S8 (R-13-C4). | Prova o `SKIP LOCKED` e o lease sem antecipar a topologia da S8. | Processos já na S5. |
+| 18.8 | Complementa D8.6. O runner tem `stop()`, que termina o item atual; o entrypoint liga o `SIGTERM` a ele. O teste de `SIGTERM` é da S8. | Os testes precisam parar o worker de forma limpa. | — |
+| 18.9 | Complementa D1.3. O claim ordena por `next_attempt_at` e depois por `created_at`, e o lote é processado nessa ordem. Quando duas reversões pendentes esperam a mesma referência, a mais antiga vence. | A cutucada põe o mesmo `now()` nas duas; o desempate pela criação deixa o resultado determinístico. | Ordem livre: o vencedor dependeria do plano de execução. |
 
 ---
 

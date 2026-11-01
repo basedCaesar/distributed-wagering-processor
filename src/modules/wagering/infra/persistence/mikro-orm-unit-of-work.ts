@@ -1,11 +1,10 @@
 import {
-  type EntityManager,
   IsolationLevel,
   LockMode,
   UniqueConstraintViolationException,
   wrap,
 } from "@mikro-orm/core";
-import type { MikroORM } from "@mikro-orm/postgresql";
+import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { IntegrationEvent } from "../../domain/events/integration-event";
 import {
   type WagerTransaction,
@@ -23,6 +22,7 @@ import type {
   IsolationLevel as AppIsolationLevel,
   LedgerRepository,
   OutboxWriter,
+  PendingControl,
   ReconciliationRunRepository,
   TransactionScope,
   UnitOfWork,
@@ -56,6 +56,29 @@ const TRANSACTION_IDENTITY_UQS: ReadonlySet<string> = new Set([
 ]);
 
 const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+
+/**
+ * "Cutucada" (D4.4, D18.6): só as pendentes da **mesma wallet** que
+ * referenciam a transação, pulando as travadas. Usa o índice
+ * `wager_transactions_pending_by_reference_ix`. O `now()` é o mesmo para
+ * todas, e o claim desempata por `created_at` (D18.9).
+ */
+const NUDGE_DEPENDENTS_SQL = `
+  UPDATE wager_transactions SET next_attempt_at = now()
+   WHERE id IN (
+     SELECT id FROM wager_transactions
+      WHERE wallet_id = ? AND provider_id = ? AND reference_external_transaction_id = ?
+        AND status = 'PENDING_REFERENCE'
+      FOR UPDATE SKIP LOCKED)`;
+
+/** Record já carregado e travado na transação (por `lockById`/`lockPending`). */
+function lockedRecord(em: EntityManager, id: string): WagerTransactionRecord {
+  const record = em.getReference(WagerTransactionSchema, id);
+  if (!wrap(record).isInitialized()) {
+    throw new Error(`transação ${id} atualizada sem lockPending antes`);
+  }
+  return record;
+}
 
 const ISOLATION: Record<AppIsolationLevel, IsolationLevel> = {
   READ_COMMITTED: IsolationLevel.READ_COMMITTED,
@@ -167,7 +190,62 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
         // A pendente nasce vencida: o worker a pega no próximo tick (D17.4).
         nextAttemptAt:
           tx.status === WagerTransactionStatus.PendingReference ? tx.createdAt : null,
+        attempts: 0,
+        consecutiveErrors: 0,
+        lockedUntil: null,
       });
+    },
+    async lockPending(id) {
+      const record = await em.findOne(
+        WagerTransactionSchema,
+        { id },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      );
+      if (!record) return undefined;
+      return {
+        transaction: wagerTransactionFromRecord(record),
+        control: {
+          attempts: record.attempts ?? 0,
+          consecutiveErrors: record.consecutiveErrors ?? 0,
+        },
+        correlationId: record.correlationId,
+      };
+    },
+    // O record gerenciado vem do `lockPending`; o flush grava só o que
+    // mudou. Colunas da submissão não mudam (trigger, D7.3).
+    resolve(tx: WagerTransaction, control: PendingControl) {
+      const record = lockedRecord(em, tx.id);
+      const next = wagerTransactionToRecord(tx, {
+        updatedAt: tx.processedAt ?? new Date(),
+        correlationId: record.correlationId,
+      });
+      em.assign(record, {
+        status: next.status,
+        failureCode: next.failureCode,
+        failureDetail: next.failureDetail,
+        referenceTransactionId: next.referenceTransactionId,
+        balanceAfter: next.balanceAfter,
+        balanceAfterCurrency: next.balanceAfterCurrency,
+        processedAt: next.processedAt,
+        updatedAt: next.updatedAt,
+        attempts: control.attempts,
+        consecutiveErrors: control.consecutiveErrors,
+        nextAttemptAt: null,
+        lockedUntil: null,
+      });
+    },
+    reschedule(id, control) {
+      em.assign(lockedRecord(em, id), {
+        attempts: control.attempts,
+        consecutiveErrors: control.consecutiveErrors,
+        nextAttemptAt: control.nextAttemptAt,
+        lockedUntil: null,
+      });
+    },
+    async nudgeDependents(tx: WagerTransaction) {
+      // A OPENING não tem id externo: ninguém a referencia.
+      if (tx.providerId === undefined || tx.externalTransactionId === undefined) return;
+      await em.execute(NUDGE_DEPENDENTS_SQL, [tx.walletId, tx.providerId, tx.externalTransactionId]);
     },
     findById: (id) => findOne({ id }),
     findByProviderAndKey: (providerId, idempotencyKey) =>

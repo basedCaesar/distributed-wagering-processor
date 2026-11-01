@@ -62,6 +62,55 @@ export interface WagerTransactionRepository {
     providerId: string,
     referenceExternalTransactionId: string,
   ): Promise<ReferenceLookup>;
+  /**
+   * `SELECT … FOR UPDATE` da linha, com as colunas de controle (D4.3). Só
+   * depois do `lockById` da wallet dela (ordem de locks, CLAUDE.md).
+   */
+  lockPending(id: string): Promise<LockedPending | undefined>;
+  /**
+   * Grava a decisão de uma pendente travada por `lockPending` (D4.5): o
+   * estado novo da entidade e as tentativas; solta o lease.
+   */
+  resolve(tx: WagerTransaction, control: PendingControl): void;
+  /** A pendente travada continua pendente: tentativas, erros e próxima tentativa; solta o lease. */
+  reschedule(id: string, control: PendingControl & { nextAttemptAt: Date }): void;
+  /**
+   * "Cutucada" (D4.4, D18.6): as pendentes **da mesma wallet** que
+   * referenciam `tx` ficam vencidas agora (`next_attempt_at = now()`),
+   * pulando as travadas (`SKIP LOCKED`). Não mexe em tentativas nem lease.
+   */
+  nudgeDependents(tx: WagerTransaction): Promise<void>;
+}
+
+/** Colunas de controle do worker, fora da entidade (D4.5, D18.1). */
+export interface PendingControl {
+  /** Toda tentativa conta; define o backoff (D4.3). */
+  attempts: number;
+  /** Erros seguidos; zera numa tentativa sem erro (D4.2, D18.1). */
+  consecutiveErrors: number;
+}
+
+export interface LockedPending {
+  transaction: WagerTransaction;
+  control: PendingControl;
+  /** Da submissão original (D9.5). */
+  correlationId: string | null;
+}
+
+/** Pendente pega pelo claim do worker (D4.3, D18.2). */
+export interface ClaimedPending {
+  id: string;
+  walletId: string;
+}
+
+/**
+ * Claim do worker (D4.3, D18.2, D18.9): numa transação curta e commitada,
+ * pega até `limit` pendentes vencidas e sem lease vigente com
+ * `FOR UPDATE SKIP LOCKED`, marca o lease e devolve em ordem de
+ * `next_attempt_at`, `created_at`. Nunca segura lock depois de voltar.
+ */
+export interface PendingQueue {
+  claimDue(limit: number, leaseMs: number): Promise<ClaimedPending[]>;
 }
 
 export interface LedgerRepository {

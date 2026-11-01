@@ -1,10 +1,5 @@
 import { InvalidWagerTransactionError } from "../domain/domain-error";
 import type { EventContext } from "../domain/events/event-context";
-import type { IntegrationEvent } from "../domain/events/integration-event";
-import { WagerTransactionPendingReference } from "../domain/events/wager-transaction-pending-reference";
-import { WagerTransactionProcessed } from "../domain/events/wager-transaction-processed";
-import { WagerTransactionRejected } from "../domain/events/wager-transaction-rejected";
-import { WalletBalanceChanged } from "../domain/events/wallet-balance-changed";
 import type { Money } from "../domain/money";
 import {
   WagerTransaction,
@@ -28,6 +23,7 @@ import type {
   SubmissionMetrics,
   UnitOfWork,
 } from "./ports";
+import { eventsForTransition } from "./transaction-events";
 
 /** O mesmo comando para o HTTP e para a fila (R-10-03, D3.3). */
 export interface SubmitWagerTransactionCommand {
@@ -56,7 +52,8 @@ export interface SubmissionResult {
  * 2. Checagem rápida da key, só leitura, para replays antigos (D3.6).
  * 3. Numa transação: trava a wallet; checagem **autoritativa** da key e do
  *    id externo; busca da referência; regras do domínio; transação,
- *    lançamento, saldo e eventos da outbox, tudo junto (R-06-52).
+ *    lançamento, saldo, eventos da outbox e, se terminal, a "cutucada" das
+ *    pendentes da mesma wallet que a esperam, tudo junto (R-06-52, D4.4).
  * 4. Se um `UNIQUE` de key ou de id externo barrar o commit (outra wallet,
  *    outro lock), repete uma vez e cai no replay ou no `409` (D3.6). Se
  *    barrar de novo, `503` (D17.6).
@@ -150,32 +147,23 @@ export class SubmitWagerTransactionUseCase {
         at,
       });
 
-      const ctx = (): EventContext => ({
+      const context = (): EventContext => ({
         eventId: this.ids.next(),
         correlationId: meta.correlationId,
         causationId: meta.causationId,
         occurredAt: at,
       });
-      const events: IntegrationEvent<unknown>[] = [];
+      const entry =
+        outcome.status === WagerTransactionStatus.Processed ? outcome.entry : undefined;
       tx.transactions.insert(transaction, meta.correlationId);
-      switch (outcome.status) {
-        case WagerTransactionStatus.Processed:
-          events.push(WagerTransactionProcessed.from(transaction, outcome.entry, ctx()));
-          if (outcome.entry) {
-            tx.wallets.update(wallet);
-            tx.ledger.insert(outcome.entry);
-            events.push(WalletBalanceChanged.from(wallet, outcome.entry, ctx()));
-          }
-          break;
-        case WagerTransactionStatus.Rejected:
-          events.push(WagerTransactionRejected.from(transaction, ctx()));
-          break;
-        case WagerTransactionStatus.PendingReference:
-          // Nasce aqui, então sempre é a transição: um evento só (D4.6).
-          events.push(WagerTransactionPendingReference.from(transaction, ctx()));
-          break;
+      if (entry) {
+        tx.wallets.update(wallet);
+        tx.ledger.insert(entry);
       }
-      tx.outbox.append(events, wallet.id);
+      // A pendente nasce aqui, então é sempre a transição: um evento só (D4.6).
+      tx.outbox.append(eventsForTransition({ transaction, wallet, entry, context }), wallet.id);
+      // Terminal: as pendentes da mesma wallet que a esperam vencem agora (D4.4).
+      if (transaction.isTerminal()) await tx.transactions.nudgeDependents(transaction);
       return { transaction, idempotentReplay: false };
     });
   }
