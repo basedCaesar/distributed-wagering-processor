@@ -13,6 +13,7 @@ import {
 } from "../domain/wager-transaction";
 import { applyWagerTransaction } from "../domain/wager-transaction-rules";
 import {
+  ConcurrentSubmissionError,
   DuplicateTransactionError,
   ExternalIdConflictError,
   IdempotencyKeyConflictError,
@@ -20,7 +21,13 @@ import {
   WalletNotFoundError,
 } from "./errors";
 import { payloadHash } from "./payload-hash";
-import type { Clock, IdGenerator, OperationMeta, UnitOfWork } from "./ports";
+import type {
+  Clock,
+  IdGenerator,
+  OperationMeta,
+  SubmissionMetrics,
+  UnitOfWork,
+} from "./ports";
 
 /** O mesmo comando para o HTTP e para a fila (R-10-03, D3.3). */
 export interface SubmitWagerTransactionCommand {
@@ -51,7 +58,10 @@ export interface SubmissionResult {
  *    id externo; busca da referência; regras do domínio; transação,
  *    lançamento, saldo e eventos da outbox, tudo junto (R-06-52).
  * 4. Se um `UNIQUE` de key ou de id externo barrar o commit (outra wallet,
- *    outro lock), repete uma vez e cai no replay ou no `409` (D3.6).
+ *    outro lock), repete uma vez e cai no replay ou no `409` (D3.6). Se
+ *    barrar de novo, `503` (D17.6).
+ *
+ * Cada duplicata de key é contada pela camada que a pegou (D11.2, D17.7).
  *
  * Nunca publica: eventos viram linhas da outbox (D9).
  */
@@ -60,6 +70,7 @@ export class SubmitWagerTransactionUseCase {
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
+    private readonly metrics: SubmissionMetrics,
   ) {}
 
   async execute(
@@ -73,21 +84,35 @@ export class SubmitWagerTransactionUseCase {
     const known = await this.uow.run((tx) =>
       tx.transactions.findByProviderAndKey(command.providerId, command.idempotencyKey),
     );
-    if (known) return replayOf(known, hash);
+    if (known) {
+      this.metrics.countDuplicate("fast_path");
+      return replayOf(known, hash);
+    }
 
     try {
-      return await this.process(command, hash, meta);
+      return await this.process(command, hash, meta, "lock");
     } catch (error) {
       if (!(error instanceof DuplicateTransactionError)) throw error;
-      // A transação foi desfeita inteira; a nova tentativa enxerga a vencedora.
-      return this.process(command, hash, meta);
+      this.metrics.countDuplicate("unique_index");
+    }
+    // A transação foi desfeita inteira; a nova tentativa enxerga a vencedora.
+    // A duplicata já foi contada pelo índice, então a repetição não conta.
+    try {
+      return await this.process(command, hash, meta, undefined);
+    } catch (error) {
+      if (!(error instanceof DuplicateTransactionError)) throw error;
+      this.metrics.countDuplicate("unique_index");
+      // Bateu de novo: conflito transitório, o reenvio resolve (D17.6).
+      throw new ConcurrentSubmissionError();
     }
   }
 
+  /** `countAs`: a camada que conta a duplicata achada sob o lock; `undefined` na repetição. */
   private process(
     command: SubmitWagerTransactionCommand,
     hash: string,
     meta: OperationMeta,
+    countAs: "lock" | undefined,
   ): Promise<SubmissionResult> {
     return this.uow.run(async (tx) => {
       // Ordem de locks: wallet, depois linhas da mesma wallet (CLAUDE.md, D7.2).
@@ -98,7 +123,10 @@ export class SubmitWagerTransactionUseCase {
         command.providerId,
         command.idempotencyKey,
       );
-      if (existing) return replayOf(existing, hash);
+      if (existing) {
+        if (countAs) this.metrics.countDuplicate(countAs);
+        return replayOf(existing, hash);
+      }
       const sameExternal = await tx.transactions.findByProviderAndExternalId(
         command.providerId,
         command.externalTransactionId,

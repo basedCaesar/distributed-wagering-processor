@@ -1,11 +1,19 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ErrorBody, startTestApi, type TestApi } from "../../support/api";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import {
+  type ErrorBody,
+  type MoneyJson,
+  startTestApi,
+  type TestApi,
+  type WalletBody,
+} from "../../support/api";
 import { withClient } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import {
   brl,
   createWallet,
+  eventsAfterOpening,
   newExternalId,
+  type OutboxEventRow,
   type SubmissionInput,
   submit,
   type TestWallet,
@@ -18,10 +26,22 @@ beforeAll(async () => {
   api = await startTestApi();
 });
 
-afterAll(async () => {
-  await api.close();
+// Todo teste que move dinheiro termina com o invariante (CLAUDE.md, D11.4).
+afterEach(async () => {
   await expectLedgerMatchesBalances();
 });
+
+afterAll(async () => {
+  await api.close();
+});
+
+/** Outra wallet do mesmo player, em outra moeda (D6.3). */
+async function walletOf(playerId: string, initialBalance: MoneyJson): Promise<TestWallet> {
+  const response = await api.request("POST", "/wallets", { body: { playerId, initialBalance } });
+  if (response.status !== 201) throw new Error(`POST /wallets devolveu ${response.status}`);
+  const wallet = (await response.json()) as WalletBody;
+  return { id: wallet.id, playerId: wallet.playerId };
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -57,23 +77,6 @@ async function entriesOf(transactionId: string) {
               balance_after::text AS balance_after, wallet_version
          FROM wallet_ledger_entries WHERE transaction_id = $1`,
       [transactionId],
-    );
-    return rows;
-  });
-}
-
-/** Eventos da wallet depois da abertura, em ordem de gravação (D9.2). */
-async function eventsAfterOpening(walletId: string) {
-  return withClient("app", async (client) => {
-    const { rows } = await client.query(
-      `SELECT event_type, aggregate_id, ordering_key, payload
-         FROM outbox_messages
-        WHERE ordering_key = $1
-          AND aggregate_id NOT IN (SELECT id FROM wager_transactions WHERE wallet_id = $1 AND kind = 'OPENING')
-          AND event_type <> 'WalletOpened'
-          AND NOT (event_type = 'WalletBalanceChanged' AND (payload->'data'->>'walletVersion')::int = 1)
-        ORDER BY position`,
-      [walletId],
     );
     return rows;
   });
@@ -202,7 +205,7 @@ describe("S4 R-09-10..17: POST /wagering/transactions", () => {
       "WagerTransactionProcessed",
       "WalletBalanceChanged",
     ]);
-    const [txEvent, balanceEvent] = events;
+    const [txEvent, balanceEvent] = events as [OutboxEventRow, OutboxEventRow];
     expect(txEvent.aggregate_id).toBe(body.transactionId);
     expect(balanceEvent.aggregate_id).toBe(wallet.id);
     for (const event of events) {
@@ -305,6 +308,106 @@ describe("S4 R-09-10..17: POST /wagering/transactions", () => {
     });
     expect(replay.status).toBe(422);
     expect(replay.body).toEqual({ ...first.body, idempotentReplay: true });
+  });
+
+  it("R-07-07 D14.2 D14.3: referência de outra wallet do mesmo player → 422 REFERENCE_SCOPE_MISMATCH com failureDetail WALLET", async () => {
+    const brlWallet = await createWallet(api, brl("100.00"));
+    const usdWallet = await walletOf(brlWallet.playerId, { amount: "100.00", currency: "USD" });
+    const bet = await processed(brlWallet, { money: brl("10.00") });
+
+    const { status, body } = await submit(
+      api,
+      wagerBody(usdWallet, {
+        kind: "REFUND",
+        money: { amount: "10.00", currency: "USD" },
+        referenceExternalTransactionId: bet.body.externalTransactionId,
+      }),
+    );
+
+    expect(status).toBe(422);
+    expect(body).toMatchObject({
+      status: "REJECTED",
+      failureCode: "REFERENCE_SCOPE_MISMATCH",
+      failureDetail: "WALLET",
+    });
+    expect(await walletState(usdWallet.id)).toEqual({ balance: "100.00", version: 1 });
+  });
+
+  it("R-07-07 D14.2 D14.3: referência de outro player → 422 REFERENCE_SCOPE_MISMATCH com failureDetail PLAYER", async () => {
+    const owner = await createWallet(api, brl("100.00"));
+    const other = await createWallet(api, brl("100.00"));
+    const bet = await processed(owner, { money: brl("10.00") });
+
+    const { status, body } = await submit(
+      api,
+      wagerBody(other, {
+        kind: "REFUND",
+        money: brl("10.00"),
+        referenceExternalTransactionId: bet.body.externalTransactionId,
+      }),
+    );
+
+    expect(status).toBe(422);
+    expect(body).toMatchObject({
+      status: "REJECTED",
+      failureCode: "REFERENCE_SCOPE_MISMATCH",
+      failureDetail: "PLAYER",
+    });
+    expect(await walletState(other.id)).toEqual({ balance: "100.00", version: 1 });
+  });
+
+  describe("D1.4: estado da referência", () => {
+    it("D1.4 R-07-07: WIN de uma BET REJECTED → 422 REFERENCE_NOT_PROCESSED, sem crédito", async () => {
+      const wallet = await createWallet(api, brl("100.00"));
+      const bet = wagerBody(wallet, { money: brl("500.00") });
+      const refused = await submit(api, bet);
+      expect(refused.body.failureCode).toBe("INSUFFICIENT_FUNDS");
+
+      const { status, body } = await submit(
+        api,
+        wagerBody(wallet, {
+          kind: "WIN",
+          money: brl("1000.00"),
+          referenceExternalTransactionId: bet.externalTransactionId,
+        }),
+      );
+
+      expect(status).toBe(422);
+      expect(body).toMatchObject({
+        status: "REJECTED",
+        failureCode: "REFERENCE_NOT_PROCESSED",
+        balance: brl("100.00"),
+      });
+      expect(await entriesOf(body.transactionId)).toEqual([]);
+      expect(await walletState(wallet.id)).toEqual({ balance: "100.00", version: 1 });
+    });
+
+    it("D1.4 D1.2 R-07-13: ROLLBACK de um REFUND ainda PENDING_REFERENCE → 202 PENDING_REFERENCE, espera", async () => {
+      const wallet = await createWallet(api, brl("100.00"));
+      const refund = wagerBody(wallet, {
+        kind: "REFUND",
+        money: brl("10.00"),
+        referenceExternalTransactionId: newExternalId("ausente"),
+      });
+      expect((await submit(api, refund)).status).toBe(202);
+
+      const { status, body } = await submit(
+        api,
+        wagerBody(wallet, {
+          kind: "ROLLBACK",
+          money: brl("10.00"),
+          referenceExternalTransactionId: refund.externalTransactionId,
+        }),
+      );
+
+      expect(status).toBe(202);
+      expect(body).toEqual({
+        transactionId: expect.stringMatching(UUID),
+        status: "PENDING_REFERENCE",
+        idempotentReplay: false,
+      });
+      expect(await walletState(wallet.id)).toEqual({ balance: "100.00", version: 1 });
+    });
   });
 
   it("R-07-13 R-11-07 D4.1 D17.4: referência ausente → 202 PENDING_REFERENCE sem balance, já vencida para o worker, evento WagerTransactionPendingReference", async () => {

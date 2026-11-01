@@ -6,7 +6,7 @@ Use cases e portas. Não importa MikroORM, AWS SDK, pino nem `infra/` (o lint ga
 
 | Arquivo | O que é | Regras |
 |---|---|---|
-| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela), repositórios (inclusive `lockById` da wallet e as buscas de transação), `OutboxWriter`, `IdGenerator`, `Clock`, `ReconciliationMetrics`, `ReconciliationLog`. | CLAUDE.md, D6.6, D7.2, D9, D16.6 |
+| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela), repositórios (inclusive `lockById` da wallet e as buscas de transação), `OutboxWriter`, `IdGenerator`, `Clock`, `ReconciliationMetrics`, `ReconciliationLog`, `SubmissionMetrics` (duplicatas por camada). | CLAUDE.md, D6.6, D7.2, D9, D16.6, D17.7 |
 | `open-wallet.use-case.ts` | Abre a wallet: wallet, `OPENING`, lançamento e eventos numa transação só. | R-09-02..05 · D6.2, D6.3, D9.4 |
 | `submit-wager-transaction.use-case.ts` | Submissão de transação: o mesmo use case para HTTP e fila (R-10-03). Lock da wallet, idempotência autoritativa, regras do domínio, `balance_after`, outbox. | R-07-*, R-08-*, R-09-10..17 · D1, D3, D4.1, D7.2, D17 |
 | `payload-hash.ts` | `canonicalJson` e `payloadHash` (algoritmo abaixo). | R-09-14 · D3.3 |
@@ -14,7 +14,7 @@ Use cases e portas. Não importa MikroORM, AWS SDK, pino nem `infra/` (o lint ga
 | `wallet-queries.ts` | `GET` da wallet e página do ledger. | R-09-06, R-09-07 · D6.8 |
 | `reconcile-wallet.use-case.ts` | Reconciliação em `REPEATABLE READ`, sem lock; grava a execução; divergência → log + métrica. | R-09-18, R-09-19 · D6.9, D16.5, D16.6 |
 | `ledger-cursor.ts` | Cursor opaco = base64url da última `walletVersion`. | D6.8 |
-| `errors.ts` | `WalletAlreadyExistsError` (409 com `walletId`), `IdempotencyKeyConflictError` e `ExternalIdConflictError` (409 com `transactionId`), `InvalidSubmissionError` e `InvalidCursorError` (400), `WalletNotFoundError` e `TransactionNotFoundError` (404), `DuplicateTransactionError` (barreira do índice, interna). | D3.6, D5, D6.3, D16.2, D17.2 |
+| `errors.ts` | `WalletAlreadyExistsError` (409 com `walletId`), `IdempotencyKeyConflictError` e `ExternalIdConflictError` (409 com `transactionId`), `InvalidSubmissionError` e `InvalidCursorError` (400), `WalletNotFoundError` e `TransactionNotFoundError` (404), `ConcurrentSubmissionError` (503, a repetição bateu de novo no índice), `DuplicateTransactionError` (barreira do índice, interna). | D3.6, D5, D6.3, D16.2, D17.2, D17.6 |
 
 ## Submeter uma transação
 
@@ -26,7 +26,9 @@ Use cases e portas. Não importa MikroORM, AWS SDK, pino nem `infra/` (o lint ga
    - busca da referência e `alreadyReversed` (só reversões `PROCESSED` contam, D1.1, D1.3);
    - `applyWagerTransaction` decide `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE` (D4.1, D14.2);
    - grava a transação (com o `balance_after` e o `correlationId`), o lançamento e o saldo se mudou, e os eventos na outbox, todos com `orderingKey` = `walletId` (R-06-52, D9.3).
-4. **Barreira final:** se o commit violar o `UNIQUE` de key ou de id externo (a mesma key em outra wallet, que tem outro lock), a transação é desfeita e o use case repete **uma vez**. A segunda tentativa vê a vencedora e cai no replay ou no `409` (D3.6).
+4. **Barreira final:** se o commit violar o `UNIQUE` de key ou de id externo (a mesma key em outra wallet, que tem outro lock), a transação é desfeita e o use case repete **uma vez**. A segunda tentativa vê a vencedora e cai no replay ou no `409` (D3.6). Se ela bater de novo num `UNIQUE`, `503` com `Retry-After` (D17.6).
+
+**Duplicatas por camada** (`wagering_duplicates_total{layer}`, D17.7): `fast_path` no passo 2, `lock` na checagem autoritativa do passo 3, `unique_index` no passo 4 (a repetição que vem depois não conta de novo). Duplicatas simultâneas na mesma wallet param no `lock`; se alguma chegar ao `unique_index`, a checagem saiu de baixo do lock.
 
 Eventos: `PROCESSED` → `WagerTransactionProcessed` (+ `WalletBalanceChanged` se o saldo mudou; `LOSS` não muda); `REJECTED` → `WagerTransactionRejected`; `PENDING_REFERENCE` → `WagerTransactionPendingReference` (uma vez, D4.6). A pendente nasce vencida para o worker (D17.4); a "cutucada" e o worker são da S5.
 
@@ -60,7 +62,7 @@ sequenceDiagram
             U->>DB: UPDATE wallet, INSERT transação, lançamento, outbox
             U->>DB: COMMIT (triggers diferidos conferem)
             alt UNIQUE de key/id externo violado
-                U->>U: repete uma vez → replay ou 409
+                U->>U: repete uma vez → replay ou 409 (de novo → 503, D17.6)
             end
             U-->>C: transação + idempotentReplay false
         end
@@ -94,8 +96,9 @@ O cálculo é puro, no domínio (`domain/wallet-reconciliation.ts`): Σ crédito
 |---|---|
 | `test/unit/application/ledger-cursor.spec.ts` | ida e volta do cursor; cursores inválidos |
 | `test/unit/application/payload-hash.spec.ts` | vetor fixo do §9; chaves ordenadas em todos os níveis; ordem dos campos não importa (propriedade); `"25"` = `"25.00"`; cada campo de negócio muda o hash; key e metadados não |
+| `test/unit/application/submit-wager-transaction.spec.ts` | barreira do `UNIQUE` com `UnitOfWork` em memória: a repetição vê a vencedora → replay, `unique_index` contado uma vez; bate de novo → `ConcurrentSubmissionError` (transitório, D17.6), sem 3ª tentativa; replay rápido conta `fast_path` |
 | `test/integration/wagering/*.spec.ts` | submissão e consultas pela API real (ver o README do HTTP) |
-| `test/concurrency/submit-transaction.spec.ts` | corridas forçadas no lock da wallet, sincronizadas por `pg_locks` (D17.5): R-13-C1 (50 iguais, as 10 conexões do pool esperando o lock → 1 débito, 49 replays), R-13-C2 (§8: 100.00 e duas de 80.00 → 1 `PROCESSED`, 1 `INSUFFICIENT_FUNDS`, saldo 20.00, 1 `DEBIT`), R-13-C3 (wallet A travada, B conclui; 10 wallets em paralelo), mesma key em duas wallets (barreira do `UNIQUE` → `409`), lock além do `lock_timeout` → `503` |
+| `test/concurrency/submit-transaction.spec.ts` | corridas forçadas no lock da wallet, sincronizadas por `pg_locks` (D17.5), contando só os waiters da wallet do teste e com prazo de 1,5 s, abaixo do `lock_timeout`: R-13-C1 (50 iguais, as 10 conexões do pool esperando o lock → 1 débito, 49 replays, `fast_path + lock = 49` e `unique_index = 0`, D17.7), R-13-C2 (§8: 100.00 e duas de 80.00 → 1 `PROCESSED`, 1 `INSUFFICIENT_FUNDS`, saldo 20.00, 1 `DEBIT`), `REFUND` e `ROLLBACK` da mesma `BET` → 1 `PROCESSED`, 1 `REFERENCE_ALREADY_REVERSED` (D1.1), R-13-C3 (wallet A travada, B conclui; mais um teste de fumaça com 10 wallets), mesma key em duas wallets (barreira do `UNIQUE` → `409`, `unique_index = 1`, nada na outbox), lock além do `lock_timeout` → `503` |
 | `test/unit/domain/wallet-reconciliation.spec.ts` | cada código da D16.5; não corrige |
 | `test/integration/wallets/*.spec.ts` | os use cases pela API real, Postgres real (ver o README do HTTP) |
 | `test/concurrency/wallet-creation.spec.ts` | `POST` parado no `UNIQUE` atrás de uma transação crua (confirmado por `pg_locks`): ela commita → `409` com o id dela; ela segura além do `lock_timeout` → `503`. Mais 20 criações iguais em paralelo → 1×201, 19×409 com o mesmo `walletId` |

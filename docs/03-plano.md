@@ -38,7 +38,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 - [ ] Algum `catch` engole erro? Todo erro passa por `classifyError()`?
 - [ ] Algum log com valor, saldo, payload, `playerId` ou token?
 - [ ] Os testes usam banco e fila reais? Algum `sleep` sincronizando teste?
-- [ ] Rodadas de 10× salvam o log de qualquer falha
+- [ ] `bun run test:repeat concurrency 10` verde? (salva o log de cada falha em `logs/test-repeat/`)
 - [ ] Algum teste foi alterado só para passar?
 - [ ] Alguma regra nova que não está em `02-decisoes.md`?
 - [ ] README da parte, diagrama da fatia e Swagger atualizados (D13)?
@@ -253,7 +253,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 **Entrega:**
 - os campos de log e a redação (D11.1);
-- todas as métricas da D11.2, em `/metrics`.
+- todas as métricas da D11.2, em `/metrics` (`wagering_duplicates_total{layer}` já é contada desde a S4, D17.7);
+- métrica e log `refund_after_settlement` quando um `REFUND` atinge uma `BET` já liquidada, sem bloquear (D1.7; adiado da S4).
 
 **Cobre:** R-12-01..03 · D11.1, D11.2, D1.7
 

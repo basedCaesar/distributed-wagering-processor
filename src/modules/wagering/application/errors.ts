@@ -1,6 +1,7 @@
 import {
   ConflictError,
   NotFoundError,
+  TransientError,
   ValidationError,
 } from "../../../shared/errors/app-errors";
 
@@ -48,6 +49,17 @@ export class DuplicateTransactionError extends Error {
   constructor(readonly constraint: string) {
     super(constraint);
     this.name = "DuplicateTransactionError";
+  }
+}
+
+/**
+ * A repetição da D3.6 bateu de novo num `UNIQUE` de key ou de id externo:
+ * conflito transitório, `503` + `Retry-After` (D17.6). Reenviar com a
+ * mesma key cai no replay ou no `409`.
+ */
+export class ConcurrentSubmissionError extends TransientError {
+  constructor() {
+    super("Submissão concorrente com a mesma identidade; tente de novo");
   }
 }
 

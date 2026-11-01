@@ -12,3 +12,11 @@ export const reconciliationDivergencesTotal = new Counter({
   help: "Reconciliações que encontraram divergência entre saldo e ledger",
   registers: [metricsRegistry],
 });
+
+/** Duplicatas de submissão pela camada que as pegou (D11.2, D17.7). */
+export const wageringDuplicatesTotal = new Counter({
+  name: "wagering_duplicates_total",
+  help: "Submissões duplicadas, pela camada que detectou a duplicata",
+  labelNames: ["layer"] as const,
+  registers: [metricsRegistry],
+});

@@ -169,6 +169,7 @@ scripts/acceptance.sh        roda os exemplos do §9 e do §10 literalmente
 bun run infra:up          # Compose completo
 bun run infra:test:up     # infraestrutura dos testes
 bun run check             # typecheck + lint + unit + integração + concorrência
+bun run test:repeat concurrency 10  # n rodadas seguidas; log de cada falha em logs/test-repeat/
 bun run test:proofs       # remove proteções e exige que os testes falhem
 bun run migration:verify  # up → down → up
 bun run acceptance        # exemplos do §9 e do §10, literalmente
@@ -177,7 +178,7 @@ bun run acceptance        # exemplos do §9 e do §10, literalmente
 ## Definição de pronto de uma fatia
 
 1. Critérios de aceite da fatia (`docs/03-plano.md`) atendidos.
-2. `bun run check` verde. Testes de concorrência verdes em 10 execuções seguidas.
+2. `bun run check` verde. Testes de concorrência verdes em 10 execuções seguidas (`bun run test:repeat concurrency 10`).
 3. Diff revisado com o checklist do plano.
 4. Se a IA errou e foi corrigida na fatia, o caso entra no `AI_WORKFLOW.md`.
 5. README.md da parte criada ou alterada atualizado, com o diagrama Mermaid previsto na D13.4 para a fatia, e endpoints novos documentados no Swagger (D13).

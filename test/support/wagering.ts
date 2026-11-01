@@ -1,6 +1,6 @@
 import type { Client } from "pg";
 import { type MoneyJson, newPlayerId, type TestApi, type WalletBody } from "./api";
-import { connect } from "./db";
+import { connect, withClient } from "./db";
 
 /** Resposta da submissão (D5, D14.3). */
 export interface SubmissionBody {
@@ -106,14 +106,19 @@ export async function submit(
   };
 }
 
+export interface WalletLock {
+  pid: number;
+  walletId: string;
+  release(): Promise<void>;
+}
+
 /**
  * Transação crua (papel da app) que trava a wallet com `FOR UPDATE` e não
- * commita: as submissões ficam esperando o lock até o teste soltar.
+ * commita: as submissões ficam esperando o lock até o teste soltar. Ela
+ * trava só essa linha, então quem espera o `transactionid` dela espera
+ * essa wallet.
  */
-export async function holdWalletLock(walletId: string): Promise<{
-  pid: number;
-  release(): Promise<void>;
-}> {
+export async function holdWalletLock(walletId: string): Promise<WalletLock> {
   const holder = await connect("app");
   await holder.query("BEGIN");
   await holder.query("SELECT 1 FROM wallets WHERE id = $1 FOR UPDATE", [walletId]);
@@ -121,6 +126,7 @@ export async function holdWalletLock(walletId: string): Promise<{
   let released = false;
   return {
     pid: rows[0]?.pid as number,
+    walletId,
     async release() {
       if (released) return;
       released = true;
@@ -131,22 +137,33 @@ export async function holdWalletLock(walletId: string): Promise<{
 }
 
 /**
- * Espera, por `pg_locks`, `count` sessões esperando o lock de linha da
- * wallet travada pelo backend `holderPid`. A primeira espera na transação
- * dele; as seguintes, no lock de tupla de `wallets` (CLAUDE.md: estado
- * observável, nunca `sleep`).
+ * Prazo da espera pelos waiters: abaixo do `lock_timeout` de 2 s (D5), para
+ * o primeiro waiter não desistir com `503` antes de o teste soltar o lock.
+ */
+export const WAITERS_DEADLINE_MS = 1500;
+
+/**
+ * Espera, por `pg_locks`, `count` sessões esperando o lock da wallet
+ * travada por `lock`. A primeira espera no `transactionid` do dono; as
+ * seguintes, no lock de tupla **dessa** linha (página e tupla do `ctid`).
+ * Waiters de outras wallets não contam (CLAUDE.md: estado observável,
+ * nunca `sleep`). Não encheu em 1,5 s → erro com o que viu.
  */
 export async function waitForWalletLockWaiters(
   observer: Client,
-  holderPid: number,
+  lock: Pick<WalletLock, "pid" | "walletId">,
   count: number,
 ): Promise<void> {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + WAITERS_DEADLINE_MS;
   let seen = 0;
   while (Date.now() < deadline) {
     const { rows } = await observer.query<{ waiters: number }>(
-      `SELECT count(DISTINCT waiter.pid)::int AS waiters
-         FROM pg_locks waiter
+      `WITH target AS (
+         SELECT (ctid::text::point)[0]::int AS page, (ctid::text::point)[1]::int AS tuple
+           FROM wallets WHERE id = $2
+       )
+       SELECT count(DISTINCT waiter.pid)::int AS waiters
+         FROM pg_locks waiter, target
         WHERE NOT waiter.granted
           AND waiter.pid <> $1
           AND (
@@ -154,13 +171,49 @@ export async function waitForWalletLockWaiters(
                SELECT holder.transactionid FROM pg_locks holder
                 WHERE holder.pid = $1 AND holder.locktype = 'transactionid'
                   AND holder.mode = 'ExclusiveLock' AND holder.granted))
-            OR (waiter.locktype = 'tuple' AND waiter.relation = 'wallets'::regclass)
+            OR (waiter.locktype = 'tuple'
+                AND waiter.relation = 'wallets'::regclass
+                AND waiter.page = target.page
+                AND waiter.tuple = target.tuple)
           )`,
-      [holderPid],
+      [lock.pid, lock.walletId],
     );
     seen = rows[0]?.waiters ?? 0;
     if (seen >= count) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
-  throw new Error(`esperava ${count} sessões no lock da wallet; vi ${seen} em 5s`);
+  throw new Error(
+    `esperava ${count} sessões no lock da wallet ${lock.walletId}, vi ${seen} em ${WAITERS_DEADLINE_MS} ms ` +
+      "(o prazo fica abaixo do lock_timeout de 2 s; se não encheu, as requisições não chegaram ao lock a tempo)",
+  );
+}
+
+export interface OutboxEventRow {
+  event_type: string;
+  aggregate_id: string;
+  ordering_key: string;
+  payload: { correlationId?: string; data: Record<string, unknown> };
+}
+
+/**
+ * Eventos da wallet depois da abertura, em ordem de gravação (D9.2): sem
+ * `WalletOpened`, sem os eventos da `OPENING` e sem o `WalletBalanceChanged`
+ * da versão 1.
+ */
+export async function eventsAfterOpening(
+  walletId: string,
+): Promise<OutboxEventRow[]> {
+  return withClient("app", async (client) => {
+    const { rows } = await client.query(
+      `SELECT event_type, aggregate_id, ordering_key, payload
+         FROM outbox_messages
+        WHERE ordering_key = $1
+          AND aggregate_id NOT IN (SELECT id FROM wager_transactions WHERE wallet_id = $1 AND kind = 'OPENING')
+          AND event_type <> 'WalletOpened'
+          AND NOT (event_type = 'WalletBalanceChanged' AND (payload->'data'->>'walletVersion')::int = 1)
+        ORDER BY position`,
+      [walletId],
+    );
+    return rows;
+  });
 }

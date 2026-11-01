@@ -126,6 +126,20 @@ export interface ReconciliationLog {
   }): void;
 }
 
+/**
+ * Onde a duplicata de uma key foi detectada (D11.2, D17.7):
+ * - `fast_path`: checagem rápida, antes do lock (operação antiga);
+ * - `lock`: checagem autoritativa, depois do lock da wallet (D3.6);
+ * - `unique_index`: o `UNIQUE` de key ou de id externo barrou o commit
+ *   (outra wallet, outro lock); a repetição que vem depois não conta de novo.
+ */
+export type DuplicateLayer = "fast_path" | "lock" | "unique_index";
+
+/** Contagem de duplicatas por camada (D11.2, D17.7). */
+export interface SubmissionMetrics {
+  countDuplicate(layer: DuplicateLayer): void;
+}
+
 /** Rastreio da operação, para os eventos (D9.5). */
 export interface OperationMeta {
   correlationId: string;
@@ -137,3 +151,4 @@ export const ID_GENERATOR = Symbol("ID_GENERATOR");
 export const CLOCK = Symbol("CLOCK");
 export const RECONCILIATION_METRICS = Symbol("RECONCILIATION_METRICS");
 export const RECONCILIATION_LOG = Symbol("RECONCILIATION_LOG");
+export const SUBMISSION_METRICS = Symbol("SUBMISSION_METRICS");

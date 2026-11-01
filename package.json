@@ -8,6 +8,7 @@
     "test:unit": "bun test test/unit",
     "test:integration": "bun test --env-file=.env.test --preload ./test/support/integration-setup.ts test/integration",
     "test:concurrency": "bun test --env-file=.env.test --preload ./test/support/integration-setup.ts test/concurrency",
+    "test:repeat": "bun run scripts/test-repeat.ts",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down",
     "migration:verify": "bun --env-file=.env.test scripts/migration-verify.ts",

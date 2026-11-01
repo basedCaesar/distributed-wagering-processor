@@ -2,7 +2,10 @@ import { Module } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { Logger } from "pino";
 import { LOGGER } from "../../../shared/logger/logger.module";
-import { reconciliationDivergencesTotal } from "../../../shared/metrics/metrics";
+import {
+  reconciliationDivergencesTotal,
+  wageringDuplicatesTotal,
+} from "../../../shared/metrics/metrics";
 import { OpenWalletUseCase } from "../application/open-wallet.use-case";
 import {
   CLOCK,
@@ -13,6 +16,8 @@ import {
   RECONCILIATION_METRICS,
   type ReconciliationLog,
   type ReconciliationMetrics,
+  SUBMISSION_METRICS,
+  type SubmissionMetrics,
   UNIT_OF_WORK,
   type UnitOfWork,
 } from "../application/ports";
@@ -26,6 +31,7 @@ import {
   PinoReconciliationLog,
   PromReconciliationMetrics,
 } from "./observability/reconciliation-reporting";
+import { PromSubmissionMetrics } from "./observability/submission-metrics";
 import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
 
 /**
@@ -66,10 +72,18 @@ import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
       inject: [UNIT_OF_WORK],
     },
     {
+      provide: SUBMISSION_METRICS,
+      useValue: new PromSubmissionMetrics(wageringDuplicatesTotal),
+    },
+    {
       provide: SubmitWagerTransactionUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator, clock: Clock) =>
-        new SubmitWagerTransactionUseCase(uow, ids, clock),
-      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK],
+      useFactory: (
+        uow: UnitOfWork,
+        ids: IdGenerator,
+        clock: Clock,
+        metrics: SubmissionMetrics,
+      ) => new SubmitWagerTransactionUseCase(uow, ids, clock, metrics),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK, SUBMISSION_METRICS],
     },
     {
       provide: TransactionQueries,

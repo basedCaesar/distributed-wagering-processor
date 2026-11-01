@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { Client } from "pg";
 import {
   type ErrorBody,
@@ -41,10 +41,14 @@ beforeAll(async () => {
   db = await connect("app");
 });
 
+// Todo teste que move dinheiro termina com o invariante (CLAUDE.md, D11.4).
+afterEach(async () => {
+  await expectLedgerMatchesBalances();
+});
+
 afterAll(async () => {
   await api.close();
   await db.end();
-  await expectLedgerMatchesBalances();
 });
 
 async function ledgerPage(walletId: string, query = ""): Promise<LedgerPage> {

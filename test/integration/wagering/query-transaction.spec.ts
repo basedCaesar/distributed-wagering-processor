@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { type ErrorBody, startTestApi, type TestApi } from "../../support/api";
 import { withClient } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
@@ -18,9 +18,13 @@ beforeAll(async () => {
   api = await startTestApi();
 });
 
+// Todo teste que move dinheiro termina com o invariante (CLAUDE.md, D11.4).
+afterEach(async () => {
+  await expectLedgerMatchesBalances();
+});
+
 afterAll(async () => {
   await api.close();
-  await expectLedgerMatchesBalances();
 });
 
 async function get(path: string, token: string | null) {
