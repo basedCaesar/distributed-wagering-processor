@@ -7,6 +7,7 @@ import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import {
   createTestTopic,
   drainEnvelopes,
+  gatedSns,
   insertOutboxEvent,
   outboxIdsOf,
   outboxRow,
@@ -16,6 +17,7 @@ import {
   type TestPublisher,
   type TestTopic,
   unpublishedCount,
+  waitLeaseExpired,
 } from "../../support/outbox";
 import { brl, createWallet, submit, wagerBody } from "../../support/wagering";
 
@@ -60,8 +62,11 @@ function failingSns(failures: number) {
   });
 }
 
-describe("R-05-04 D9: nada publicado antes do commit", () => {
-  it("R-05-04: evento gravado numa transação ainda aberta → o publisher não o vê; depois do commit, publica", async () => {
+describe("R-05-04 D9: o publisher só vê eventos commitados", () => {
+  // O que este teste prova é só o lado do publisher: ele não enxerga a linha da
+  // outbox de uma transação aberta. Que o use case nunca publica direto é
+  // estrutural (lint + test/unit/outbox-only-exit.spec.ts, D20.10).
+  it("R-05-04 D20.10: o publisher não vê o evento de uma transação ainda aberta; depois do commit, publica", async () => {
     const publisher = await publisherFor();
     const open = await connect("app");
     let eventId: string;
@@ -70,7 +75,6 @@ describe("R-05-04 D9: nada publicado antes do commit", () => {
       eventId = (await insertOutboxEvent(open, { walletId: newId() })).id;
 
       expect(await publisher.runOnce()).toEqual({ claimed: 0, published: [], failed: [] });
-      expect(await drainEnvelopes(topic.queueUrl, 1, 1500)).toEqual([]);
 
       await open.query("COMMIT");
     } finally {
@@ -144,6 +148,39 @@ describe("R-11-03 D9.6 D20.5: o processo morre e outra instância publica", () =
     hung?.(Object.assign(new Error("conexão caiu"), { code: "ECONNRESET" }));
     expect((await dyingRound).failed).toEqual([id]);
     expect(await outboxRow(id)).toMatchObject({ published: true, attempts: 0, last_error_code: null, locked_by: null });
+  }, SLOW_TEST_MS);
+
+  it("D20.5: o lease de A vence, B pega o mesmo evento e só então o Publish de A tem sucesso → o mark de A não marca nada (o dono é B) e A loga o lease vencido", async () => {
+    const { id } = await seed(newId());
+    const gateA = gatedSns();
+    const gateB = gatedSns();
+    const a = await publisherFor({ wrapSns: gateA.wrap, policy: { leaseMs: 1000 } });
+    const b = await publisherFor({ wrapSns: gateB.wrap });
+
+    // A faz o claim e fica parado no SNS; o lease de 1 s vence; B pega o mesmo evento.
+    const roundA = a.runOnce();
+    await gateA.reached;
+    await waitLeaseExpired(id);
+    const roundB = b.runOnce();
+    await gateB.reached;
+    expect((await outboxRow(id)).locked_by).toBe(b.publisher.leaseToken);
+
+    // Só agora o SNS confirma a publicação de A.
+    gateA.release();
+    expect((await roundA).published).toEqual([id]);
+    // Sem `AND locked_by = ?` no mark, A marcaria o evento de B como publicado.
+    expect(await outboxRow(id)).toMatchObject({ published: false, locked_by: b.publisher.leaseToken, leased: true });
+    expect(a.logs.filter((line) => line.msg === "evento publicado com lease vencido")).toMatchObject([
+      { level: 40, lost: 1 },
+    ]);
+
+    // B termina normalmente: ele é o dono e marca.
+    gateB.release();
+    expect((await roundB).published).toEqual([id]);
+    expect(await outboxRow(id)).toMatchObject({ published: true, locked_by: null, leased: false });
+    expect(b.logs.filter((line) => line.msg === "evento publicado com lease vencido")).toEqual([]);
+    // O SNS FIFO deduplica pelo eventId (D9.1): a fila assinante recebe uma cópia.
+    expect((await drainEnvelopes(topic.queueUrl, 1)).map((r) => r.eventId)).toEqual([id]);
   }, SLOW_TEST_MS);
 });
 

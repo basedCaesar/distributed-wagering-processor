@@ -233,10 +233,11 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `bun run test:proofs`;
 - diagrama da visão geral dos processos (D13.4).
 
-**Cobre:** R-05-08, R-08-06, R-13-C4, R-13-C8, R-13-I6 · D7.4, D8.6
+**Cobre:** R-05-08, R-08-06, R-13-C4, R-13-C6 (processos separados), R-13-C8, R-13-I6 · D7.4, D8.6, D20.6
 
 **Aceite:**
 - R-13-C4: 3 processos separados com carga simultânea na mesma wallet → invariantes válidas;
+- R-13-C6 também com dois publishers em **processos separados** sobre a mesma outbox → cada evento publicado uma vez e em ordem de `walletVersion` por wallet (na S7 eles ficam no mesmo processo, com pools separados, D20.6);
 - R-13-C8: reinício no meio da carga → consistência final verificada pela reconciliação de todas as wallets;
 - **provas**: cada patch remove uma proteção e um teste nomeado **falha**:
   - o `FOR UPDATE`;
@@ -244,7 +245,7 @@ Se atrasar, os extras encolhem. O núcleo não.
   - o `CHECK` de saldo;
   - o trigger do ledger;
   - o `SKIP LOCKED` no claim do worker de pendentes;
-  - sem `SKIP LOCKED` no claim da outbox → R-13-C6 falha (S7);
+  - sem `SKIP LOCKED` no claim da outbox → falha o 2º teste do R-13-C6, "R-13-C6 D20.3: claim de A em andamento (cabeça travada) → B pula essa wallet sem esperar e não pega o 2º evento dela" (S7; o 1º, dos dois publishers em laço, passa sem o `SKIP LOCKED`);
   - a cutucada das pendentes (D4.4);
   - o desempate da D18.9 invertido;
   - a checagem do dono do lease (D18.10);

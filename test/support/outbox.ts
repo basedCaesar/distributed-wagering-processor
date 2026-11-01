@@ -13,15 +13,16 @@ import {
   ReceiveMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+import { Writable } from "node:stream";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { Client } from "pg";
+import pino, { type Logger } from "pino";
 import { WAGERING_ENTITIES } from "../../src/modules/wagering/infra/persistence";
 import { MikroOrmOutboxStore } from "../../src/modules/wagering/infra/persistence/outbox-store";
 import type { OutboxPolicy } from "../../src/modules/wagering/infra/outbox/outbox-policy";
 import { OutboxPublisher, type PublishRound } from "../../src/modules/wagering/infra/outbox/outbox-publisher";
 import { SnsEventPublisher, type SnsSender } from "../../src/modules/wagering/infra/outbox/sns-event-publisher";
 import { createSnsClient } from "../../src/shared/aws/sns-client";
-import { logger } from "../../src/shared/logger/logger";
 import { createOrm } from "../../src/shared/orm/create-orm";
 import { credentialsFor, newId, withClient } from "./db";
 
@@ -73,14 +74,31 @@ export async function createTestTopic(): Promise<TestTopic> {
 
 export interface TestPublisher {
   publisher: OutboxPublisher;
+  /** Linhas JSON que este publisher logou (logger próprio, só dele). */
+  logs: Record<string, unknown>[];
   runOnce(): Promise<PublishRound>;
   close(): Promise<void>;
+}
+
+/** Logger pino que escreve numa lista, para o teste ler o que um publisher logou. */
+function capturingLogger(): { logger: Logger; logs: Record<string, unknown>[] } {
+  const logs: Record<string, unknown>[] = [];
+  const sink = new Writable({
+    write(chunk, _encoding, done) {
+      for (const line of String(chunk).split("\n")) {
+        if (line.trim() !== "") logs.push(JSON.parse(line));
+      }
+      done();
+    },
+  });
+  return { logger: pino({ level: "debug" }, sink), logs };
 }
 
 /**
  * Publisher montado à mão sobre um MikroORM **próprio** (pool próprio,
  * papel da app) e o tópico do teste: duas chamadas são duas instâncias.
- * `wrapSns` injeta falhas ou conta as publicações (D20.6).
+ * `wrapSns` injeta falhas ou conta as publicações (D20.6). Cada publisher
+ * tem o próprio logger, lido em `logs`.
  */
 export async function startTestPublisher(
   topic: Pick<TestTopic, "topicArn">,
@@ -89,6 +107,7 @@ export async function startTestPublisher(
   const orm: MikroORM = await createOrm({ credentials: await credentialsFor("app"), entities: WAGERING_ENTITIES });
   const client = createSnsClient({ region, endpoint }, { requestTimeoutMs: 10_000 });
   const sender = options.wrapSns ? options.wrapSns(client) : client;
+  const { logger, logs } = capturingLogger();
   const publisher = new OutboxPublisher(
     new MikroOrmOutboxStore(orm),
     new SnsEventPublisher(sender, topic.topicArn),
@@ -98,6 +117,7 @@ export async function startTestPublisher(
   );
   return {
     publisher,
+    logs,
     runOnce: () => publisher.runOnce(),
     async close() {
       await publisher.stop();
@@ -105,6 +125,61 @@ export async function startTestPublisher(
       client.destroy();
     },
   };
+}
+
+/**
+ * SNS com portão: a 1ª chamada fica pendurada até o teste mandar `release()`
+ * (encaminha ao SNS de verdade e devolve a resposta dele) ou `fail()`.
+ * `reached` resolve quando a chamada chega ao portão (estado observável).
+ */
+export interface SnsGate {
+  wrap(client: SnsSender): SnsSender;
+  reached: Promise<void>;
+  release(): void;
+  fail(error: Error): void;
+}
+
+export function gatedSns(): SnsGate {
+  let signalReached: () => void = () => {};
+  const reached = new Promise<void>((resolve) => {
+    signalReached = resolve;
+  });
+  let pending: { release(): void; fail(error: Error): void } | undefined;
+  return {
+    reached,
+    wrap: (client) => ({
+      send(command) {
+        return new Promise((resolve, reject) => {
+          pending = {
+            release: () => {
+              client.send(command).then(resolve, reject);
+            },
+            fail: reject,
+          };
+          signalReached();
+        });
+      },
+    }),
+    release: () => pending?.release(),
+    fail: (error) => pending?.fail(error),
+  };
+}
+
+/** Espera o lease do evento vencer no relógio do banco (estado observável, sem `sleep`). */
+export async function waitLeaseExpired(id: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const expired = await withClient("app", async (client) => {
+      const { rows } = await client.query<{ expired: boolean }>(
+        "SELECT locked_until IS NOT NULL AND locked_until <= now() AS expired FROM outbox_messages WHERE id = $1",
+        [id],
+      );
+      return rows[0]?.expired === true;
+    });
+    if (expired) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`o lease do evento ${id} não venceu em ${timeoutMs} ms`);
 }
 
 /** Conta as chamadas a `Publish` por `eventId` (`MessageDeduplicationId`, D20.6). */

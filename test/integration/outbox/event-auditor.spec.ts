@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { CONSUMER_POLICY } from "../../../src/modules/wagering/infra/messaging/consumer-policy";
+import { EVENT_AUDITOR_NAME } from "../../../src/modules/wagering/infra/messaging/event-auditor";
 import { startTestApi } from "../../support/api";
 import { auditedRows, envelopeJson, startTestAuditor, type TestAuditor } from "../../support/auditor";
-import { inboxRows, pollUntil } from "../../support/consumer";
-import { newId } from "../../support/db";
+import { inboxRows, messageAttempts, pollUntil } from "../../support/consumer";
+import { connect, newId } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import {
   createTestTopic,
@@ -89,6 +91,62 @@ describe("D20.2: erros permanentes do auditor → DLQ própria, intactos", () =>
     expect((await receiveMessages(queues.dlqUrl, 1))[0]?.Body).toBe(invalid.body);
     expect(await auditedRows([invalid.eventId])).toEqual([]);
   });
+});
+
+/**
+ * Segura, numa transação aberta do papel da app, a linha da inbox que o
+ * auditor vai tentar gravar: o `INSERT … ON CONFLICT` dele espera essa
+ * transação e cai no `lock_timeout` (2 s, D5) → transitório.
+ */
+async function holdInboxRow(consumerName: string, messageId: string): Promise<{ release(): Promise<void> }> {
+  const holder = await connect("app");
+  await holder.query("BEGIN");
+  await holder.query(
+    `INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+     VALUES ($1, $2, $3, now(), now())`,
+    [consumerName, messageId, "0".repeat(64)],
+  );
+  return {
+    async release() {
+      await holder.query("ROLLBACK");
+      await holder.end();
+    },
+  };
+}
+
+describe("D20.2 D8.3: transitório no auditor → tentativas contadas e DLQ do auditor no limite de 8", () => {
+  it("D20.2 D8.3 D19.11: inbox travada (lock_timeout) → message_attempts com consumer_name = event-auditor e, na 8ª falha, a mensagem vai intacta para a DLQ do auditor", async () => {
+    const walletId = newId();
+    const event = envelopeJson({ walletId, walletVersion: 2 });
+    await sendMessage(queues.queueUrl, event.body, { groupId: walletId, attributes: ORIGIN_ATTRIBUTES });
+    // O nome de produção do auditor e o limite padrão (8): nada sobrescrito.
+    const auditor = await startTestAuditor(queues, { consumerName: EVENT_AUDITOR_NAME });
+    auditors.push(auditor);
+    expect(auditor.consumerName).toBe("event-auditor");
+    expect(CONSUMER_POLICY.maxAttempts).toBe(8);
+    const lock = await holdInboxRow(EVENT_AUDITOR_NAME, event.eventId);
+    try {
+      for (let attempt = 1; attempt < 8; attempt++) {
+        expect(await pollUntil(auditor, 1)).toEqual(["retry_scheduled"]);
+        expect(await messageAttempts(EVENT_AUDITOR_NAME, event.eventId)).toEqual({
+          attempts: attempt,
+          last_error_code: "TEMPORARILY_UNAVAILABLE",
+        });
+      }
+      expect(await pollUntil(auditor, 1)).toEqual(["dead_lettered"]);
+    } finally {
+      await lock.release();
+    }
+
+    // Na DLQ, as tentativas são apagadas (D19.11); a cópia é intacta; nada auditado.
+    expect(await messageAttempts(EVENT_AUDITOR_NAME, event.eventId)).toBeUndefined();
+    const [copy] = await receiveMessages(queues.dlqUrl, 1);
+    expect(copy?.Body).toBe(event.body);
+    expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
+    expect(await auditedRows([event.eventId])).toEqual([]);
+    expect(await inboxRows(EVENT_AUDITOR_NAME, event.eventId)).toBe(0);
+    expect(await queueCounts(queues.queueUrl)).toEqual({ visible: 0, inFlight: 0 });
+  }, 60_000);
 });
 
 describe("D20.1: checagem de ordem por (wallet, tipo de evento)", () => {

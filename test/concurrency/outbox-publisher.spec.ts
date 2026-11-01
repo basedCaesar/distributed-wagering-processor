@@ -63,6 +63,12 @@ async function waitUntil(condition: () => Promise<boolean>, timeoutMs = 20_000):
 }
 
 describe("R-13-C6 R-13-I4 R-11-02: dois publishers sobre a mesma outbox", () => {
+  // Este teste NÃO pega a remoção do `SKIP LOCKED` do claim. Sem ele, o 2º
+  // claim espera o lock da cabeça; quando o 1º commita o lease, o Postgres
+  // reavalia o WHERE na versão nova da linha (`locked_until <= now()` agora
+  // é falso) e a descarta: nenhum evento sai duas vezes, só mais devagar. A
+  // prova do `SKIP LOCKED` (S8) é o teste seguinte, "claim de A em andamento".
+  // Na S7 os dois publishers ficam neste processo, com pools separados (D20.6).
   it("R-13-C6 R-13-I4 D20.6: 10 wallets × 5 eventos, dois publishers em laço → cada eventId publicado uma vez (contado no SNS) e em ordem de walletVersion por wallet", async () => {
     const seeded = await seedWallets(10, 5);
     const walletIds = [...seeded.keys()];
@@ -103,21 +109,18 @@ describe("R-13-C6 R-13-I4 R-11-02: dois publishers sobre a mesma outbox", () => 
     // A trava a cabeça como o claim dele faria, e não commita.
     const a = await connect("app");
     let round: Awaited<ReturnType<TestPublisher["runOnce"]>>;
-    let elapsed: number;
     try {
       await a.query("BEGIN");
       await a.query("SELECT id FROM outbox_messages WHERE id = $1 FOR UPDATE", [lockedHead?.id]);
-      const started = Date.now();
+      // Sem SKIP LOCKED, B esperaria o lock e o claim cairia no lock_timeout
+      // (2 s, D5): o runOnce lança e o teste falha.
       round = await b.runOnce();
-      elapsed = Date.now() - started;
     } finally {
       await a.query("ROLLBACK");
       await a.end();
     }
 
     expect(round.published).toEqual([freeHead?.id]);
-    // Sem SKIP LOCKED, B esperaria o lock (até o lock_timeout de 2 s) em vez de pular.
-    expect(elapsed).toBeLessThan(1_500);
     expect((await outboxRow(lockedNext?.id as string)).published).toBe(false);
     expect((await outboxRow(lockedHead?.id as string)).published).toBe(false);
   }, SLOW_TEST_MS);
