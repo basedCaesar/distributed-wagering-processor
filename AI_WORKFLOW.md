@@ -64,10 +64,14 @@ Resultado de `bun run test:proofs`, preenchido na S8:
 | Índice de uma reversão por referência | dupla reversão em paralelo | |
 | `CHECK` de saldo ≥ 0 | `UPDATE` direto com saldo negativo | |
 | Trigger append-only do ledger | `UPDATE` com o papel dono | |
-| Trigger de cauda (saldo = último lançamento) | saldo alterado sem lançamento | |
-| `SKIP LOCKED` da outbox | R-13-C6 | |
+| `SKIP LOCKED` no claim do worker de pendentes | D4.3 D18.2: o segundo claim pula as linhas travadas sem esperar | |
+| `SKIP LOCKED` no claim da outbox (S7) | R-13-C6 | |
+| Cutucada das pendentes (D4.4) | R-13-C7 (aplicado em < 2 s, com backoff de 4 s) | |
+| Desempate da D18.9 invertido | D18.9: a reversão criada primeiro é `PROCESSED` | |
+| Checagem do dono do lease (D18.10) | D18.10: lease vencido com o item em processamento → `attempts = 1` | |
 | Ack depois do commit | R-13-C5 | |
 | Inbox | mesma mensagem duas vezes | |
+| Trigger de cauda (saldo = último lançamento) | saldo alterado sem lançamento | |
 | Papel restrito do banco | `UPDATE` no ledger com o papel da app | |
 
 ## O que eu fiz sem a IA

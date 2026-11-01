@@ -244,6 +244,7 @@ Se atrasar, os extras encolhem. O núcleo não.
   - o `CHECK` de saldo;
   - o trigger do ledger;
   - o `SKIP LOCKED` no claim do worker de pendentes;
+  - sem `SKIP LOCKED` no claim da outbox → R-13-C6 falha (S7);
   - a cutucada das pendentes (D4.4);
   - o desempate da D18.9 invertido;
   - a checagem do dono do lease (D18.10);
