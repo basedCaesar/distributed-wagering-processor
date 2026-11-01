@@ -31,4 +31,4 @@ O cálculo é puro, no domínio (`domain/wallet-reconciliation.ts`): Σ crédito
 | `test/unit/application/ledger-cursor.spec.ts` | ida e volta do cursor; cursores inválidos |
 | `test/unit/domain/wallet-reconciliation.spec.ts` | cada código da D16.5; não corrige |
 | `test/integration/wallets/*.spec.ts` | os use cases pela API real, Postgres real (ver o README do HTTP) |
-| `test/concurrency/wallet-creation.spec.ts` | 20 criações iguais em paralelo → 1×201, 19×409 com o mesmo `walletId` |
+| `test/concurrency/wallet-creation.spec.ts` | `POST` parado no `UNIQUE` atrás de uma transação crua (confirmado por `pg_locks`): ela commita → `409` com o id dela; ela segura além do `lock_timeout` → `503`. Mais 20 criações iguais em paralelo → 1×201, 19×409 com o mesmo `walletId` |

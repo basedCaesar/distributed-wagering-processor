@@ -10,6 +10,8 @@ import type { AuthConfig } from "../../src/shared/auth/auth.config";
 const KID = "test-key";
 const ISSUER = "https://issuer.test.local/realms/wagering";
 const AUDIENCE = "wagering-api";
+/** Curto para o teste do JWKS que não responde (D16.16). */
+const JWKS_TIMEOUT_MS = 500;
 
 export interface TokenOptions {
   /** Papéis em `realm_access.roles` (D16.1). */
@@ -26,6 +28,15 @@ export interface TokenOptions {
   hs256?: boolean;
 }
 
+/**
+ * Como o JWKS responde (D16.16):
+ * - `ok`: as chaves;
+ * - `status503`: `503` sem corpo;
+ * - `hang`: nunca responde (estoura o `jwksTimeoutMs`);
+ * - `refused`: a porta do JWKS não tem serviço.
+ */
+export type JwksBehavior = "ok" | "status503" | "hang" | "refused";
+
 export interface TestIssuer {
   config: AuthConfig;
   token(options?: TokenOptions): Promise<string>;
@@ -34,12 +45,24 @@ export interface TestIssuer {
   stop(): Promise<void>;
 }
 
+/** Uma porta livre do sistema, já sem serviço. */
+async function closedPort(): Promise<number> {
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const port = probe.port;
+  await probe.stop(true);
+  if (port === undefined) throw new Error("porta livre não encontrada");
+  return port;
+}
+
 /**
  * Emissor de teste (D10.3): um par RSA e um JWKS servido por HTTP de
  * verdade. A API valida com o mesmo adaptador `jose` da produção; só a URL
  * do JWKS muda.
  */
-export async function startTestIssuer(): Promise<TestIssuer> {
+export async function startTestIssuer(
+  options: { jwks?: JwksBehavior } = {},
+): Promise<TestIssuer> {
+  const behavior = options.jwks ?? "ok";
   const own = await generateKeyPair("RS256", { extractable: true });
   const foreign = await generateKeyPair("RS256");
   const jwk = {
@@ -48,11 +71,25 @@ export async function startTestIssuer(): Promise<TestIssuer> {
     alg: "RS256",
     use: "sig",
   };
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => Response.json({ keys: [jwk] }),
-  });
+  // Requisições do `hang` que ficam abertas até o `stop`.
+  const hanging: (() => void)[] = [];
+  const server =
+    behavior === "refused"
+      ? undefined
+      : Bun.serve({
+          port: 0,
+          hostname: "127.0.0.1",
+          fetch: () => {
+            if (behavior === "status503") return new Response(null, { status: 503 });
+            if (behavior === "hang") {
+              return new Promise<Response>((resolve) => {
+                hanging.push(() => resolve(new Response(null, { status: 503 })));
+              });
+            }
+            return Response.json({ keys: [jwk] });
+          },
+        });
+  const port = server?.port ?? (await closedPort());
 
   async function token(options: TokenOptions = {}): Promise<string> {
     const payload: JWTPayload = {
@@ -85,14 +122,16 @@ export async function startTestIssuer(): Promise<TestIssuer> {
     config: {
       issuer: ISSUER,
       audience: AUDIENCE,
-      jwksUrl: `http://127.0.0.1:${server.port}/jwks`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
+      jwksTimeoutMs: JWKS_TIMEOUT_MS,
     },
     token,
     operatorToken: () => token({ roles: ["operator"], providerId: null }),
     providerToken: (providerId = "provider-a") =>
       token({ roles: ["provider"], providerId }),
     stop: async () => {
-      await server.stop(true);
+      for (const release of hanging) release();
+      await server?.stop(true);
     },
   };
 }

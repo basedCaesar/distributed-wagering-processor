@@ -22,7 +22,9 @@ const BEARER = /^Bearer ([^\s]+)$/;
 
 /**
  * Guard global (D10.4): tudo exige token, menos o que é `@Public()`. Roda
- * antes dos pipes, então sem token é `401` mesmo com corpo inválido.
+ * antes da validação do schema (zod, no controller), então sem token e com
+ * corpo fora do schema é `401`. O parse do JSON é anterior ao guard: JSON
+ * mal formado responde `400` mesmo sem token (D16.15).
  */
 @Injectable()
 export class AuthGuard implements CanActivate {

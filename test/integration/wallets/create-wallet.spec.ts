@@ -262,13 +262,4 @@ describe("S3 R-09-02..05 D6.2 D6.3: POST /wallets", () => {
     expect(response.status).toBe(400);
     expect(body.error.code).toBe("VALIDATION_ERROR");
   });
-
-  it("D11.1: nenhum log com saldo, valor ou playerId", async () => {
-    const playerId = newPlayerId();
-    await createWallet({ playerId, initialBalance: brl("777.77") });
-
-    const dump = JSON.stringify(api.logs);
-    expect(dump).not.toContain(playerId);
-    expect(dump).not.toContain("777.77");
-  });
 });

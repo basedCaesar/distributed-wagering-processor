@@ -12,7 +12,11 @@ export const REQUIRED_ROLES = "auth:requiredRoles";
 /** Sem token: health e `/docs` (R-02-06, D13.2). */
 export const Public = () => SetMetadata(IS_PUBLIC, true);
 
-/** Papéis aceitos (D10.2). Sem `@Roles`, qualquer token válido serve. */
+/**
+ * Papéis aceitos (D10.2): basta ter um deles, então um token com os dois
+ * papéis tem as permissões dos dois (D16.10). Sem `@Roles`, qualquer token
+ * válido serve.
+ */
 export const Roles = (...roles: Role[]) => SetMetadata(REQUIRED_ROLES, roles);
 
 export interface AuthenticatedRequest extends Request {

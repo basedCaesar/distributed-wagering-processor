@@ -136,7 +136,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 **Aceite:**
 - criar wallet e depois criar de novo → `409` com o `walletId`;
 - `version: 1` com e sem `OPENING`;
-- o cursor é estável com inserções no meio;
+- o cursor é estável: lançamentos gravados entre duas páginas aparecem na página seguinte, sem duplicata nem furo (D16.9);
 - uma reconciliação com divergência injetada por SQL (pelo papel dono) volta `consistent: false`, com log e métrica;
 - `401` sem token; `403` com papel errado; health sem token.
 
@@ -228,6 +228,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 **Entrega:**
 - topologia do Compose (nginx, `api` ×3, `consumer` ×3, `publisher` ×2, `worker` ×2, auditor);
 - `SIGTERM` em todos os processos;
+- prazo de 10 s por requisição (D5), com teste;
 - testes de falha;
 - `bun run test:proofs`;
 - diagrama da visão geral dos processos (D13.4).

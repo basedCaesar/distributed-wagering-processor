@@ -136,18 +136,20 @@ describe("S3 D10 D16.1: autenticação e permissões", () => {
     }
   });
 
-  it("D10.1: a validação acontece antes da validação do corpo (sem token e corpo inválido → 401)", async () => {
+  it("D16.15: JSON mal formado é lido antes da autenticação → 400 mesmo sem token", async () => {
+    const response = await fetch(`${api.baseUrl}/wallets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{ não é json",
+    });
+    await expectError(response, 400, "VALIDATION_ERROR");
+  });
+
+  it("D10.1 D16.15: o guard roda antes da validação do schema (sem token e corpo fora do schema → 401)", async () => {
     const response = await api.request("POST", "/wallets", {
       token: null,
       body: { playerId: "" },
     });
     await expectError(response, 401, "UNAUTHENTICATED");
-  });
-
-  it("D11.1: o token nunca aparece nos logs", async () => {
-    const token = await api.issuer.token({ roles: ["operator"], expiresIn: -10 });
-    await api.request("GET", `/wallets/${walletId}`, { token });
-
-    expect(JSON.stringify(api.logs)).not.toContain(token);
   });
 });

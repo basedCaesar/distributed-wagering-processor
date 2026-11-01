@@ -6,9 +6,9 @@ import { LedgerDirection, type WalletLedgerEntry } from "./wallet-ledger-entry";
 export enum ReconciliationIssueCode {
   /** Σ créditos − Σ débitos ≠ saldo armazenado. */
   BalanceMismatch = "BALANCE_MISMATCH",
-  /** `balanceBefore` do lançamento ≠ `balanceAfter` do anterior (ou ≠ 0 no primeiro). */
+  /** `balanceBefore` do lançamento ≠ `balanceAfter` do anterior (ou ≠ 0 no primeiro, D16.11). */
   ChainBreak = "CHAIN_BREAK",
-  /** Último `balanceAfter` (ou 0 sem lançamento) ≠ saldo armazenado. */
+  /** Último `balanceAfter` (ou 0 sem lançamento) ≠ saldo armazenado (D16.12). */
   TailMismatch = "TAIL_MISMATCH",
 }
 

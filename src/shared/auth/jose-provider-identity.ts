@@ -1,5 +1,6 @@
 import {
   createRemoteJWKSet,
+  customFetch,
   errors,
   type JWTPayload,
   jwtVerify,
@@ -15,6 +16,28 @@ import type {
 const KNOWN_ROLES: readonly Role[] = ["provider", "operator"];
 
 /**
+ * Busca o JWKS e trata o emissor indisponível como transitório (D16.16):
+ * conexão recusada, timeout ou resposta não-200 viram `TransientError`,
+ * que o `jose` repassa sem embrulhar.
+ */
+async function fetchJwks(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    // Rejeição do `fetch` é sempre de rede (recusa, DNS, timeout do signal).
+    throw new TransientError("JWKS do emissor inalcançável");
+  }
+  if (response.status !== 200) {
+    throw new TransientError("JWKS do emissor respondeu fora do 200");
+  }
+  return response;
+}
+
+/**
  * Valida o JWT com o JWKS do emissor (D10.1): assinatura, emissor,
  * audiência, expiração e algoritmo (só RS256, D16.1). Papéis em
  * `realm_access.roles` e provedor em `provider_id`, como o Keycloak emite.
@@ -23,7 +46,10 @@ export class JoseProviderIdentity implements ProviderIdentityPort {
   private readonly jwks: ReturnType<typeof createRemoteJWKSet>;
 
   constructor(private readonly config: AuthConfig) {
-    this.jwks = createRemoteJWKSet(new URL(config.jwksUrl));
+    this.jwks = createRemoteJWKSet(new URL(config.jwksUrl), {
+      timeoutDuration: config.jwksTimeoutMs,
+      [customFetch]: fetchJwks,
+    });
   }
 
   async authenticate(bearerToken: string): Promise<Identity> {
@@ -35,7 +61,9 @@ export class JoseProviderIdentity implements ProviderIdentityPort {
         algorithms: ["RS256"],
       }));
     } catch (error) {
-      // JWKS fora do ar é transitório; qualquer outro erro do jose é token inválido.
+      // Emissor indisponível é transitório (D16.16); qualquer outro erro do
+      // jose é token inválido.
+      if (error instanceof TransientError) throw error;
       if (error instanceof errors.JWKSTimeout) {
         throw new TransientError("JWKS do emissor não respondeu");
       }

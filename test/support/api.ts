@@ -5,14 +5,14 @@ import pino from "pino";
 import { ApiModule } from "../../src/app/api.module";
 import { configureApiApp } from "../../src/app/configure-api-app";
 import { AUTH_CONFIG } from "../../src/shared/auth/auth.config";
-import { LOGGER } from "../../src/shared/logger/logger.module";
-import { startTestIssuer, type TestIssuer } from "./auth";
+import { logger } from "../../src/shared/logger/logger";
+import { type JwksBehavior, startTestIssuer, type TestIssuer } from "./auth";
 
 export interface TestApi {
   app: INestApplication;
   baseUrl: string;
   issuer: TestIssuer;
-  /** Linhas JSON que a aplicação logou pelo `LOGGER`. */
+  /** Linhas JSON que a aplicação logou (logger singleton, inclusive pelo `LOGGER`). */
   logs: Record<string, unknown>[];
   request(
     method: string,
@@ -22,13 +22,37 @@ export interface TestApi {
   close(): Promise<void>;
 }
 
+export interface TestApiOptions {
+  /** Como o JWKS do emissor de teste responde (D16.16). */
+  jwks?: JwksBehavior;
+  /** Provedores trocados, para forçar caminhos de erro (ex.: um `500`). */
+  overrides?: { provide: unknown; useValue: unknown }[];
+}
+
+/**
+ * O logger singleton escreve no stream guardado em `streamSym`, lido a cada
+ * linha: trocá-lo captura tudo o que a aplicação loga, pelo `LOGGER`
+ * injetado (que é o próprio singleton) ou pelo import direto.
+ */
+function captureSingletonLogs(sink: Writable): () => void {
+  const target = logger as unknown as Record<symbol, unknown>;
+  const original = target[pino.symbols.streamSym];
+  target[pino.symbols.streamSym] = sink;
+  return () => {
+    target[pino.symbols.streamSym] = original;
+  };
+}
+
 /**
  * Sobe a API real (`ApiModule`, Postgres de teste, papel da app) numa porta
  * livre. Só duas coisas mudam: o emissor de token aponta para o emissor de
- * teste (D10.3), e o logger escreve numa lista para os testes lerem.
+ * teste (D10.3), e o logger singleton escreve numa lista para os testes
+ * lerem.
  */
-export async function startTestApi(): Promise<TestApi> {
-  const issuer = await startTestIssuer();
+export async function startTestApi(options: TestApiOptions = {}): Promise<TestApi> {
+  const issuer = await startTestIssuer(
+    options.jwks === undefined ? {} : { jwks: options.jwks },
+  );
   const logs: Record<string, unknown>[] = [];
   const sink = new Writable({
     write(chunk, _encoding, done) {
@@ -38,13 +62,15 @@ export async function startTestApi(): Promise<TestApi> {
       done();
     },
   });
+  const restoreLogs = captureSingletonLogs(sink);
 
-  const moduleRef = await Test.createTestingModule({ imports: [ApiModule] })
+  let builder = Test.createTestingModule({ imports: [ApiModule] })
     .overrideProvider(AUTH_CONFIG)
-    .useValue(issuer.config)
-    .overrideProvider(LOGGER)
-    .useValue(pino(sink))
-    .compile();
+    .useValue(issuer.config);
+  for (const override of options.overrides ?? []) {
+    builder = builder.overrideProvider(override.provide).useValue(override.useValue);
+  }
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ logger: false });
   configureApiApp(app);
   await app.listen(0, "127.0.0.1");
@@ -76,6 +102,7 @@ export async function startTestApi(): Promise<TestApi> {
     async close() {
       await app.close();
       await issuer.stop();
+      restoreLogs();
     },
   };
 }

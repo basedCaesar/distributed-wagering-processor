@@ -1,6 +1,6 @@
 # wagering — HTTP
 
-Controllers do `wagering` no processo `api`. Toda rota exige Bearer, menos health e `/docs` (D10). Documentação interativa em **`/docs`** (JSON em `/docs-json`), com corpo, respostas e status da D5 de cada endpoint (D13.2).
+Controllers do `wagering` no processo `api`. Toda rota exige Bearer, menos health e `/docs` (D10). Documentação interativa em **`/docs`** (JSON em `/docs-json`, também aberto, D16.14), com corpo, respostas e status da D5 de cada endpoint (D13.2).
 
 ## Endpoints
 
@@ -32,9 +32,12 @@ Os detalhes do `400` levam só o caminho e a mensagem de cada problema, nunca o 
 
 | Arquivo | Prova |
 |---|---|
-| `test/integration/wallets/create-wallet.spec.ts` | `201` com e sem `OPENING`, `version` 1, eventos na outbox em ordem, `409` com `walletId`, outra moeda, `400` sem gravar, correlação, logs sem dados sensíveis |
-| `test/integration/wallets/query-wallet.spec.ts` | `GET` da wallet, ordem do ledger, `limit`, cursor estável com inserções entre páginas, `400` e `404` |
-| `test/integration/wallets/reconciliation.spec.ts` | consistente; saldo e lançamento adulterados pelo papel dono → `consistent: false` com log e métrica; não corrige |
-| `test/integration/auth/auth.spec.ts` | `401`, `403`, permissões por papel, health e `/docs` abertos |
-| `test/integration/docs/swagger.spec.ts` | todos os endpoints no Swagger, com os status da D5 e o Bearer |
+| `test/integration/wallets/create-wallet.spec.ts` | `201` com e sem `OPENING`, `version` 1, eventos na outbox em ordem, `409` com `walletId`, outra moeda, `400` sem gravar, correlação |
+| `test/integration/wallets/query-wallet.spec.ts` | `GET` da wallet, ordem do ledger, `limit`, cursor estável: lançamentos gravados entre páginas aparecem na seguinte (D16.9), `400` e `404` |
+| `test/integration/wallets/reconciliation.spec.ts` | consistente; saldo adulterado pelo papel dono → `consistent: false` com log e métrica; não corrige. O `CHAIN_BREAK` é provado no teste de unidade do `reconcileWallet` (o ledger não recebe `UPDATE`, nem em teste) |
+| `test/integration/logging/sensitive-data.spec.ts` | nos caminhos que logam (divergência, `500`), nenhum valor, saldo, `playerId` nem token; o logger singleton é capturado (D11.1) |
+| `test/concurrency/wallet-creation.spec.ts` | `POST` parado no índice único (por `pg_locks`): rival commita → `409` com o id dela; rival segura além do `lock_timeout` → `503` com `Retry-After: 1`; 20 em paralelo |
+| `test/integration/auth/auth.spec.ts` | `401`, `403`, permissões por papel, health e `/docs` abertos, JSON mal formado sem token → `400` (D16.15) |
+| `test/integration/auth/jwks-unavailable.spec.ts` | JWKS não-200, recusado ou sem resposta → `503` (D16.16) |
+| `test/integration/docs/swagger.spec.ts` | todos os endpoints no Swagger, com os status da D5, o Bearer, o corpo de erro em toda resposta de erro e o `Retry-After` no `503` |
 | `test/unit/http/failure-code-http-status.spec.ts` | status de cada `failureCode` |

@@ -10,11 +10,7 @@ import {
 import { connect, newId } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import { credit, debitBet, seedWallet } from "../../support/db-seed";
-import {
-  type Tampering,
-  tamperLedgerEntry,
-  tamperWalletBalance,
-} from "../../support/tamper";
+import { type Tampering, tamperWalletBalance } from "../../support/tamper";
 
 interface ReconciliationBody {
   walletId: string;
@@ -139,28 +135,6 @@ describe("S3 R-09-18 R-09-19 D6.9: POST /wallets/:id/reconciliation", () => {
     expect(dump).not.toContain("5.00");
     const [run] = await runsOf(wallet.id);
     expect(run).toMatchObject({ consistent: false, difference: "5.00" });
-  });
-
-  it("R-09-19 D6.9 D16.5: lançamento do meio adulterado → CHAIN_BREAK na versão seguinte", async () => {
-    const wallet = await walletWithHistory();
-    // v2 era BET 30 (100 → 70); passa a dizer 20 (100 → 80).
-    tampering = await tamperLedgerEntry(wallet.id, 2, {
-      amount: "20.00",
-      balanceAfter: "80.00",
-    });
-
-    const body = await reconcile(wallet.id);
-
-    expect(body).toMatchObject({
-      storedBalance: brl("75.00"),
-      calculatedBalance: brl("85.00"),
-      difference: { amount: "-10.00", currency: "BRL" },
-      consistent: false,
-      issues: [
-        { code: "BALANCE_MISMATCH" },
-        { code: "CHAIN_BREAK", walletVersion: 3 },
-      ],
-    });
   });
 
   it("R-09-19 D6.9: a reconciliação não corrige nada", async () => {

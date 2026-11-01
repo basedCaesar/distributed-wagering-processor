@@ -12,16 +12,16 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 
 | Categoria | Status | Código (D16.2) | Exemplos |
 |---|---|---|---|
-| validação | `400` | `VALIDATION_ERROR` | zod, cursor, JSON mal formado |
+| validação | `400` | `VALIDATION_ERROR` | zod, cursor, JSON mal formado, outros 4xx do framework (`413`, `415`…, D16.13) |
 | sem token | `401` | `UNAUTHENTICATED` | |
 | sem permissão | `403` | `FORBIDDEN` | |
 | não encontrado | `404` | `NOT_FOUND` | wallet, rota |
 | conflito | `409` | o do erro | `WALLET_ALREADY_EXISTS` |
-| transitório | `503` | `TEMPORARILY_UNAVAILABLE` | SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException` |
+| transitório | `503` | `TEMPORARILY_UNAVAILABLE` | JWKS do emissor indisponível (D16.16); SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException` |
 | interno | `500` | `INTERNAL_ERROR` | erro de domínio que escapou da borda, constraint sem tradução, qualquer outra coisa |
 
 Uma constraint violada que o repositório não traduziu para um erro de aplicação é bug, não conflito: vira `500`. A mensagem de um erro interno não vaza para o cliente, e o log leva só nome, SQLSTATE e constraint, nunca o `detail` do banco, que pode trazer valores (D11.1).
 
 ## Testes
 
-`test/unit/errors/classify-error.spec.ts`; o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`.
+`test/unit/errors/classify-error.spec.ts`; o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`; o `503` com `Retry-After` de um `lock_timeout` real em `test/concurrency/wallet-creation.spec.ts`; o log do `500` sem dados em `test/integration/logging/sensitive-data.spec.ts`.

@@ -27,7 +27,18 @@ const DESCRIPTIONS: Record<number, string> = {
   503: "Falha transitória (TEMPORARILY_UNAVAILABLE), com Retry-After",
 };
 
-/** Documenta os status de erro da D5 de um endpoint (D13.2). */
+/** `503` sempre com `Retry-After` (D16.3). */
+const RETRY_AFTER_HEADER = {
+  "Retry-After": {
+    description: "Segundos até tentar de novo (D16.3)",
+    schema: { type: "integer", example: 1 },
+  },
+};
+
+/**
+ * Documenta os status de erro da D5 de um endpoint (D13.2), todos com o
+ * corpo `{ error: { code, message, details? } }`.
+ */
 export function ApiErrorResponses(...statuses: number[]) {
   return applyDecorators(
     ...statuses.map((status) =>
@@ -35,6 +46,7 @@ export function ApiErrorResponses(...statuses: number[]) {
         status,
         description: DESCRIPTIONS[status],
         type: ErrorResponseDto,
+        ...(status === 503 && { headers: RETRY_AFTER_HEADER }),
       }),
     ),
   );

@@ -153,7 +153,7 @@ describe("S3 R-09-07 D6.8: GET /wallets/:id/ledger", () => {
     expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
-  it("R-09-07 D6.8: cursor estável com inserções entre as páginas", async () => {
+  it("R-09-07 D6.8 D16.9: cursor estável: lançamentos gravados entre as páginas aparecem na seguinte, sem duplicata nem furo", async () => {
     const wallet = await walletWithEntries(3);
     const first = await ledgerPage(wallet.id, "?limit=2");
     expect(first.items.map((item) => item.walletVersion)).toEqual([1, 2]);
