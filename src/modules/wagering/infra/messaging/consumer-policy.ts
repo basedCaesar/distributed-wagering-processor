@@ -27,6 +27,10 @@ export interface ConsumerPolicy {
    * último receive trouxe (D19.9). 20 s + 5 s cabem nos 30 s do Compose.
    */
   releaseMarginMs: number;
+  /** Espera depois do 1º receive que falhou (D19.10). */
+  receiveBackoffInitialMs: number;
+  /** Teto da espera entre receives que falham (D19.10). */
+  receiveBackoffMaxMs: number;
 }
 
 export const CONSUMER_POLICY: ConsumerPolicy = {
@@ -38,7 +42,21 @@ export const CONSUMER_POLICY: ConsumerPolicy = {
   backoffMaxSeconds: 300,
   shutdownGraceMs: 20_000,
   releaseMarginMs: 5_000,
+  receiveBackoffInitialMs: 1_000,
+  receiveBackoffMaxMs: 30_000,
 };
+
+/**
+ * Espera antes do próximo receive depois de `failures` receives seguidos
+ * que falharam (D19.10): 1 s, dobrando até 30 s. `failures` começa em 1.
+ */
+export function receiveBackoffMs(
+  failures: number,
+  initialMs = CONSUMER_POLICY.receiveBackoffInitialMs,
+  maxMs = CONSUMER_POLICY.receiveBackoffMaxMs,
+): number {
+  return Math.min(initialMs * 2 ** (failures - 1), maxMs);
+}
 
 /** 2ⁿ s, até o teto (D8.2). `attempt` começa em 1. */
 export function backoffSeconds(
@@ -64,7 +82,8 @@ export type Disposition = "dead_letter" | "retry";
  * - Permanente → DLQ na hora: inválido, wallet inexistente, conflitos de
  *   inbox, de key e de id externo (D19.1).
  * - Transitório e interno → retry contado, DLQ no limite (D8.3, D19.2).
- *   Sem auth na fila (L40), `401`/`403` só sairiam de um bug: interno.
+ *   Sem auth na fila (L40), `unauthenticated`/`forbidden` vindos do use
+ *   case só sairiam de um bug: contam como internos (D19.2).
  */
 const DISPOSITION: Record<ErrorCategory, Disposition> = {
   validation: "dead_letter",

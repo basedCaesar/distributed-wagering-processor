@@ -42,6 +42,18 @@ export interface ReceiveOptions {
 }
 
 /**
+ * A cópia chegou à DLQ, mas o `DeleteMessage` da fila principal falhou
+ * (D19.6): a mensagem continua em voo e volta quando a visibilidade vencer.
+ * `cause` é o erro do delete.
+ */
+export class DeadLetterDeleteError extends Error {
+  constructor(cause: unknown) {
+    super("cópia enviada para a DLQ, mas o delete da fila falhou", { cause });
+    this.name = "DeadLetterDeleteError";
+  }
+}
+
+/**
  * A fila de entrada e a DLQ (R-10-01). Receive, ack, visibilidade e a
  * cópia para a DLQ: **envia e só depois apaga** (D19.6).
  */
@@ -92,7 +104,8 @@ export class SqsWagerQueue {
    * Cópia intacta para a DLQ (D8.2, D19.6): corpo, atributos, grupo e
    * deduplicação originais, nenhum atributo novo. Envia e só depois apaga:
    * uma queda entre os dois deixa uma cópia a mais na DLQ, nunca perde a
-   * mensagem. Se o envio falhar, nada é apagado.
+   * mensagem. Se o envio falhar, nada é apagado e o erro do envio sobe; se
+   * o envio der certo e o delete falhar, sobe `DeadLetterDeleteError`.
    */
   async deadLetter(message: QueueMessage): Promise<void> {
     await this.client.send(
@@ -105,7 +118,11 @@ export class SqsWagerQueue {
           message.deduplicationId ?? createHash("sha256").update(message.body).digest("hex"),
       }),
     );
-    await this.ack(message);
+    try {
+      await this.ack(message);
+    } catch (error) {
+      throw new DeadLetterDeleteError(error);
+    }
   }
 }
 

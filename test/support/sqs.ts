@@ -21,6 +21,9 @@ export function testSqsClient(): SQSClient {
 const sqs = testSqsClient();
 
 export interface TestQueues {
+  /** Nomes, para a config do processo (`QUEUE_WAGER_TRANSACTIONS*`). */
+  queueName: string;
+  dlqName: string;
   queueUrl: string;
   dlqUrl: string;
   destroy(): Promise<void>;
@@ -33,8 +36,10 @@ export interface TestQueues {
  */
 export async function createTestQueues(options: { maxReceiveCount?: number } = {}): Promise<TestQueues> {
   const name = `wager-test-${Bun.randomUUIDv7()}`;
+  const queueName = `${name}.fifo`;
+  const dlqName = `${name}-dlq.fifo`;
   const dlq = await sqs.send(
-    new CreateQueueCommand({ QueueName: `${name}-dlq.fifo`, Attributes: { FifoQueue: "true" } }),
+    new CreateQueueCommand({ QueueName: dlqName, Attributes: { FifoQueue: "true" } }),
   );
   const dlqUrl = dlq.QueueUrl as string;
   const { Attributes } = await sqs.send(
@@ -42,7 +47,7 @@ export async function createTestQueues(options: { maxReceiveCount?: number } = {
   );
   const main = await sqs.send(
     new CreateQueueCommand({
-      QueueName: `${name}.fifo`,
+      QueueName: queueName,
       Attributes: {
         FifoQueue: "true",
         ContentBasedDeduplication: "true",
@@ -55,6 +60,8 @@ export async function createTestQueues(options: { maxReceiveCount?: number } = {
   );
   const queueUrl = main.QueueUrl as string;
   return {
+    queueName,
+    dlqName,
     queueUrl,
     dlqUrl,
     async destroy() {

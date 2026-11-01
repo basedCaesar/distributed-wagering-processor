@@ -9,6 +9,7 @@ import { Migration20261030000007_ledger_transaction_coherence } from "./Migratio
 import { Migration20261031000008_processed_currency } from "./Migration20261031000008_processed_currency";
 import { Migration20261101000009_pending_consecutive_errors } from "./Migration20261101000009_pending_consecutive_errors";
 import { Migration20261101000010_pending_lease_owner } from "./Migration20261101000010_pending_lease_owner";
+import { Migration20261101000011_message_attempts_delete } from "./Migration20261101000011_message_attempts_delete";
 
 /** Ordem de aplicação. Migration aplicada nunca é editada: crie outra. */
 export const MIGRATIONS: MigrationObject[] = [
@@ -22,4 +23,5 @@ export const MIGRATIONS: MigrationObject[] = [
   Migration20261031000008_processed_currency,
   Migration20261101000009_pending_consecutive_errors,
   Migration20261101000010_pending_lease_owner,
+  Migration20261101000011_message_attempts_delete,
 ].map((migration) => ({ name: migration.name, class: migration }));

@@ -64,6 +64,18 @@ describe("S2 D7.3: privilégios do papel da aplicação", () => {
     );
   });
 
+  it("D7.3 D19.11: o único DELETE do papel da app é em message_attempts; TRUNCATE em nenhuma tabela", async () => {
+    const { rows } = await app.query<{ table_name: string; privilege_type: string }>(`
+      SELECT table_name, privilege_type
+        FROM information_schema.role_table_grants
+       WHERE grantee = current_user
+         AND table_schema = 'public'
+         AND privilege_type IN ('DELETE', 'TRUNCATE')
+       ORDER BY table_name, privilege_type`);
+
+    expect(rows).toEqual([{ table_name: "message_attempts", privilege_type: "DELETE" }]);
+  });
+
   it("R-06-22 D7.3: a app não muda player_id nem moeda de uma wallet", async () => {
     const wallet = await seedWallet(app);
 

@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { PendingWorkerAppModule } from "../app/pending-worker.module";
 import { PendingWorker } from "../modules/wagering/infra/workers/pending-worker";
+import { exitOnBootstrapFailure } from "../shared/errors/bootstrap-failure";
 import { logger } from "../shared/logger/logger";
 
 /**
@@ -17,4 +18,4 @@ async function bootstrap() {
   logger.info("pending-worker iniciado");
 }
 
-bootstrap();
+bootstrap().catch(exitOnBootstrapFailure("pending-worker"));

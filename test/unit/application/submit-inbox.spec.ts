@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { InboxConflictError } from "../../../src/modules/wagering/application/errors";
+import {
+  DuplicateTransactionError,
+  InboxConflictError,
+} from "../../../src/modules/wagering/application/errors";
 import { inboxHash, payloadHash } from "../../../src/modules/wagering/application/payload-hash";
 import type {
   DuplicateLayer,
@@ -12,7 +15,10 @@ import {
   type SubmitWagerTransactionCommand,
   SubmitWagerTransactionUseCase,
 } from "../../../src/modules/wagering/application/submit-wager-transaction.use-case";
-import { WagerTransactionKind } from "../../../src/modules/wagering/domain/wager-transaction";
+import {
+  WagerTransaction,
+  WagerTransactionKind,
+} from "../../../src/modules/wagering/domain/wager-transaction";
 import { Wallet } from "../../../src/modules/wagering/domain/wallet";
 import { brl, T0 } from "../../support/wager-fixtures";
 
@@ -33,10 +39,35 @@ const command: SubmitWagerTransactionCommand = {
 
 const inbox = { consumerName: "consumer-test", messageId: "msg-1", type: "WagerTransactionRequested" };
 
-/** Escopo em memória que registra a ordem das chamadas ao banco. */
-function fakeUow(registration: InboxRegistration) {
+/** A transação que "ganhou" fora do lock desta wallet, com o mesmo payload (D3.6). */
+function winner(): WagerTransaction {
+  return WagerTransaction.create({
+    id: "0192f298-345e-7e38-af88-e43f851a819d",
+    providerId: command.providerId,
+    externalTransactionId: command.externalTransactionId,
+    idempotencyKey: command.idempotencyKey,
+    payloadHash: payloadHash(command),
+    walletId: command.walletId,
+    playerId: command.playerId,
+    roundId: command.roundId,
+    gameId: command.gameId,
+    kind: command.kind,
+    money: command.money,
+    referenceExternalTransactionId: undefined,
+    createdAt: T0,
+  });
+}
+
+/**
+ * Escopo em memória que registra a ordem das chamadas ao banco. Com
+ * `uniqueBarrierOnFirstCommit`, o "commit" da 1ª transação falha com
+ * `DuplicateTransactionError` e a vencedora fica visível (D3.6).
+ */
+function fakeUow(registration: InboxRegistration, options: { uniqueBarrierOnFirstCommit?: boolean } = {}) {
   const calls: string[] = [];
   const registered: InboxEntry[] = [];
+  let barrierLeft = options.uniqueBarrierOnFirstCommit ?? false;
+  let visible: WagerTransaction | undefined;
   const scope = {
     now: async () => T0,
     inbox: {
@@ -64,7 +95,7 @@ function fakeUow(registration: InboxRegistration) {
     transactions: {
       findByProviderAndKey: async () => {
         calls.push("transactions.findByProviderAndKey");
-        return undefined;
+        return visible;
       },
       findByProviderAndExternalId: async () => undefined,
       insert: () => calls.push("transactions.insert"),
@@ -76,7 +107,15 @@ function fakeUow(registration: InboxRegistration) {
   const uow: UnitOfWork = {
     async run(work) {
       calls.push("BEGIN");
-      return work(scope);
+      const result = await work(scope);
+      if (barrierLeft) {
+        // O UNIQUE barrou o commit: tudo desfeito, inclusive a inbox.
+        barrierLeft = false;
+        visible = winner();
+        calls.push("ROLLBACK");
+        throw new DuplicateTransactionError("wager_transactions_provider_key_uq");
+      }
+      return result;
     },
   };
   return { uow, calls, registered };
@@ -139,6 +178,24 @@ describe("R-10-04 D3.7 D3.8 D19.4: inbox no use case da submissão", () => {
 
     await expect(useCase.execute(command, meta, inbox)).rejects.toBeInstanceOf(InboxConflictError);
     expect(calls).toEqual(["BEGIN", "inbox.register"]);
+  });
+
+  it("D3.6 D19.4: o UNIQUE barra o commit → a repetição grava a inbox de novo, na mesma transação do replay", async () => {
+    const { uow, calls, registered } = fakeUow("new", { uniqueBarrierOnFirstCommit: true });
+    const { useCase, counted } = useCaseWith(uow);
+
+    const result = await useCase.execute(command, meta, inbox);
+
+    expect(result).toMatchObject({ idempotentReplay: true, transaction: { id: winner().id } });
+    expect(counted).toEqual(["unique_index"]);
+    // Duas transações: a 1ª desfeita pelo UNIQUE, a 2ª (a que commita o
+    // replay) começa de novo pela inbox, antes do lock da wallet.
+    const rollback = calls.indexOf("ROLLBACK");
+    const retry = calls.slice(rollback + 1);
+    expect(calls.slice(0, 3)).toEqual(["BEGIN", "inbox.register", "wallets.lockById"]);
+    expect(retry.slice(0, 3)).toEqual(["BEGIN", "inbox.register", "wallets.lockById"]);
+    expect(registered).toHaveLength(2);
+    expect(registered[1]).toEqual(registered[0]);
   });
 
   it("R-10-03: sem inbox (HTTP), o caminho continua o da S4: checagem rápida e nenhuma inbox", async () => {

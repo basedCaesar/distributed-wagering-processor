@@ -3,6 +3,7 @@ import { NestFactory } from "@nestjs/core";
 import { ApiModule } from "../app/api.module";
 import { configureApiApp } from "../app/configure-api-app";
 import { loadConfig } from "../shared/config/config";
+import { exitOnBootstrapFailure } from "../shared/errors/bootstrap-failure";
 import { logger } from "../shared/logger/logger";
 
 async function bootstrap() {
@@ -13,4 +14,4 @@ async function bootstrap() {
   logger.info({ port: config.port }, "api iniciada");
 }
 
-bootstrap();
+bootstrap().catch(exitOnBootstrapFailure("api"));

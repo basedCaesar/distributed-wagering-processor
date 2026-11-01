@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { ConsumerAppModule } from "../app/consumer.module";
 import { WagerTransactionsConsumer } from "../modules/wagering/infra/messaging/wager-transactions-consumer";
+import { exitOnBootstrapFailure } from "../shared/errors/bootstrap-failure";
 import { logger } from "../shared/logger/logger";
 
 /**
@@ -16,4 +17,4 @@ async function bootstrap() {
   logger.info("consumer iniciado");
 }
 
-bootstrap();
+bootstrap().catch(exitOnBootstrapFailure("consumer"));

@@ -7,6 +7,7 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 | `app-errors.ts` | Classes base com categoria: `ValidationError`, `UnauthenticatedError`, `ForbiddenError`, `NotFoundError`, `ConflictError(code)`, `TransientError`. Os módulos estendem estas; o `classifyError` não conhece módulo nenhum. |
 | `classify-error.ts` | `classifyError(error)` → `{ category, httpStatus, code, message, details? }`. |
 | `http-exception.filter.ts` | Filtro global: corpo `{ error: { code, message, details? } }`, `Retry-After: 1` no `503` (D16.3), log de erros internos e transitórios. |
+| `bootstrap-failure.ts` | `exitOnBootstrapFailure(processo)`: o `bootstrap().catch(...)` de todo entrypoint (`src/entrypoints/main-*.ts`). Classifica pelo `classifyError()`, loga categoria, código e nome do erro (nunca a mensagem, D11.1) em `fatal` e sai com `process.exit(1)`. |
 
 ## Classificação
 
@@ -16,7 +17,7 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 | sem token | `401` | `UNAUTHENTICATED` | |
 | sem permissão | `403` | `FORBIDDEN` | |
 | não encontrado | `404` | `NOT_FOUND` | wallet, rota |
-| conflito | `409` | o do erro | `WALLET_ALREADY_EXISTS` |
+| conflito | `409` | o do erro | `WALLET_ALREADY_EXISTS`, `EXTERNAL_ID_CONFLICT`, `INBOX_MESSAGE_CONFLICT` (só na fila, vai para a DLQ, D19.4) |
 | transitório | `503` | `TEMPORARILY_UNAVAILABLE` | JWKS do emissor indisponível (D16.16); SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException` |
 | interno | `500` | `INTERNAL_ERROR` | erro de domínio que escapou da borda, constraint sem tradução, qualquer outra coisa |
 
@@ -24,4 +25,4 @@ Uma constraint violada que o repositório não traduziu para um erro de aplicaç
 
 ## Testes
 
-`test/unit/errors/classify-error.spec.ts`; o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`; o `503` com `Retry-After` de um `lock_timeout` real em `test/concurrency/wallet-creation.spec.ts`; o log do `500` sem dados em `test/integration/logging/sensitive-data.spec.ts`.
+`test/unit/errors/classify-error.spec.ts`; `test/unit/errors/bootstrap-failure.spec.ts` (sai com 1, log sem a mensagem do erro); o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`; o `503` com `Retry-After` de um `lock_timeout` real em `test/concurrency/wallet-creation.spec.ts`; o log do `500` sem dados em `test/integration/logging/sensitive-data.spec.ts`.

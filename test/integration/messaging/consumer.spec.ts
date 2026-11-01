@@ -1,12 +1,14 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createServer } from "node:net";
 import { ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
 import { Test } from "@nestjs/testing";
 import { ConsumerAppModule } from "../../../src/app/consumer.module";
 import type { UnitOfWork } from "../../../src/modules/wagering/application/ports";
 import type { SqsSender } from "../../../src/modules/wagering/infra/messaging/sqs-wager-queue";
 import { WagerTransactionsConsumer } from "../../../src/modules/wagering/infra/messaging/wager-transactions-consumer";
-import { queueUrlOf } from "../../../src/shared/aws/sqs-client";
+import { loadConfig } from "../../../src/shared/config/config";
+import { APP_CONFIG } from "../../../src/shared/config/config.module";
 import { startTestApi, type TestApi } from "../../support/api";
 import {
   effectsOf,
@@ -28,7 +30,6 @@ import {
   receiveMessages,
   sendMessage,
   type TestQueues,
-  testSqsClient,
 } from "../../support/sqs";
 import { parkPendings } from "../../support/worker";
 import {
@@ -122,14 +123,19 @@ describe("R-10-02 D8.1: a mensagem do §10", () => {
       }
     });
     await sendMessage(queues.queueUrl, SECTION_10_BODY, { groupId: "0192f291-27dd-7d3f-8071-5f8685deef37" });
-    const consumer = await consumerFor();
+    // consumer_name único por rodada: a inbox dele começa vazia, mesmo com a BET já gravada.
+    const consumerName = `section-10-${Bun.randomUUIDv7()}`;
+    expect(await inboxRows(consumerName, "msg-123")).toBe(0);
+    const consumer = await consumerFor({ consumerName });
 
     expect(await pollUntil(consumer, 1)).toEqual(["processed"]);
 
     const effects = await effectsOf("provider-a", "transaction-123");
     expect(effects.transactions.map((t) => t.status)).toEqual(["PROCESSED"]);
     expect(effects.entries).toEqual([{ direction: "DEBIT", amount: "25.00" }]);
-    expect(await inboxRows(consumer.consumerName, "msg-123")).toBe(1);
+    // A linha da inbox só nasce na transação do use case: ele rodou nesta
+    // rodada, aplicando a BET (1ª rodada) ou caindo no replay (as seguintes).
+    expect(await inboxRows(consumerName, "msg-123")).toBe(1);
     await expectQueueEmpty(queues.queueUrl);
     await expectQueueEmpty(queues.dlqUrl);
   });
@@ -349,7 +355,8 @@ describe("R-10-07 R-13-I5 D8.2 D8.3: transitório → retry com backoff, depois 
       await lock.release();
     }
 
-    expect((await messageAttempts(consumer.consumerName, message.messageId))?.attempts).toBe(3);
+    // Na DLQ, as tentativas são apagadas (D19.11).
+    expect(await messageAttempts(consumer.consumerName, message.messageId)).toBeUndefined();
     const [copy] = await receiveMessages(queues.dlqUrl, 1);
     expect(copy?.Body).toBe(message.body);
     expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
@@ -397,7 +404,64 @@ describe("R-10-07 R-13-I5 D8.2 D8.3: transitório → retry com backoff, depois 
     await expectQueueEmpty(queues.queueUrl);
   }, SLOW_TEST_MS);
 
-  it("R-10-05 D19.2: falha forçada no commit → sem ack, nada gravado (nem inbox), tentativa contada", async () => {
+  it("D19.11: message_attempts some na DLQ e no ack; a mensagem devolvida da DLQ para a fila começa do zero", async () => {
+    const w = await wallet();
+    const message = wagerMessage(w);
+    await sendMessage(queues.queueUrl, message.body, { groupId: w.id });
+    const consumer = await consumerFor({ policy: { maxAttempts: 2 } });
+    const lock = await holdWalletLock(w.id);
+    try {
+      expect(await pollUntil(consumer, 1)).toEqual(["retry_scheduled"]);
+      expect((await messageAttempts(consumer.consumerName, message.messageId))?.attempts).toBe(1);
+      expect(await pollUntil(consumer, 1)).toEqual(["dead_lettered"]);
+      expect(await messageAttempts(consumer.consumerName, message.messageId)).toBeUndefined();
+
+      // O operador devolve a cópia da DLQ para a fila (redrive manual).
+      const [copy] = await receiveMessages(queues.dlqUrl, 1);
+      await sendMessage(queues.queueUrl, copy?.Body as string, { groupId: w.id, deduplicationId: "redrive-1" });
+
+      // Começa do zero: a 1ª falha é retry, não DLQ.
+      expect(await pollUntil(consumer, 1)).toEqual(["retry_scheduled"]);
+      expect((await messageAttempts(consumer.consumerName, message.messageId))?.attempts).toBe(1);
+    } finally {
+      await lock.release();
+    }
+
+    expect(await pollUntil(consumer, 1)).toEqual(["processed"]);
+    expect(await messageAttempts(consumer.consumerName, message.messageId)).toBeUndefined();
+    expect(await balanceOf(w.id)).toBe("75.00");
+    await expectQueueEmpty(queues.queueUrl);
+  }, SLOW_TEST_MS);
+
+  it("D19.6: a 1ª do grupo vai para retry → a 2ª do mesmo grupo não é processada no lote, volta com visibilidade 0 e só é aplicada depois da 1ª", async () => {
+    const locked = await wallet();
+    const free = await wallet();
+    const first = wagerMessage(locked);
+    const second = wagerMessage(free);
+    await sendMessage(queues.queueUrl, first.body, { groupId: "group-order" });
+    await sendMessage(queues.queueUrl, second.body, { groupId: "group-order" });
+    const consumer = await consumerFor();
+    const lock = await holdWalletLock(locked.id);
+    try {
+      // As duas chegam no mesmo receive; a 1ª bate no lock_timeout.
+      expect(await pollUntil(consumer, 2)).toEqual(["retry_scheduled", "released"]);
+      expect(await balanceOf(free.id)).toBe("100.00");
+      expect(await messageAttempts(consumer.consumerName, second.messageId)).toBeUndefined();
+    } finally {
+      await lock.release();
+    }
+
+    expect(await pollUntil(consumer, 2)).toEqual(["processed", "processed"]);
+    const [firstTx] = (await effectsOf("provider-a", first.externalTransactionId)).transactions;
+    const [secondTx] = (await effectsOf("provider-a", second.externalTransactionId)).transactions;
+    // UUIDv7 gerado na ordem de processamento: a 1ª foi aplicada antes da 2ª.
+    expect([firstTx?.id, secondTx?.id].sort()).toEqual([firstTx?.id, secondTx?.id]);
+    expect(await balanceOf(locked.id)).toBe("75.00");
+    expect(await balanceOf(free.id)).toBe("75.00");
+    await expectQueueEmpty(queues.queueUrl);
+  }, SLOW_TEST_MS);
+
+  it("R-10-05 D19.2: erro dentro da transação → rollback, sem ack, nada gravado (nem inbox), tentativa contada", async () => {
     const w = await wallet();
     const message = wagerMessage(w);
     await sendMessage(queues.queueUrl, message.body, { groupId: w.id });
@@ -486,17 +550,45 @@ describe("R-10-08 D8.5: SIGTERM (stop)", () => {
   }, SLOW_TEST_MS);
 });
 
+/** O `stop()` espera o long poll de 20 s do processo (D19.9), que não é encurtado aqui. */
+const NEST_TEST_MS = 45_000;
+
 describe("D7.4 D8.5: o processo consumer (Nest)", () => {
-  it("D7.4: o ConsumerAppModule consome a wager-transactions.fifo configurada e para no shutdown", async () => {
+  it("D7.4 D8.5 D19.8: o ConsumerAppModule consome a fila configurada e, no shutdown, o stop() do consumidor termina antes de o ORM fechar", async () => {
     const w = await wallet();
     const message = wagerMessage(w);
-    const client = testSqsClient();
-    const queueUrl = await queueUrlOf(client, process.env.QUEUE_WAGER_TRANSACTIONS as string);
-    await sendMessage(queueUrl, message.body, { groupId: w.id });
-    const moduleRef = await Test.createTestingModule({ imports: [ConsumerAppModule] }).compile();
+    await sendMessage(queues.queueUrl, message.body, { groupId: w.id });
+    // O par de filas deste teste (D19.8), não a wager-transactions.fifo compartilhada.
+    const config = loadConfig();
+    const moduleRef = await Test.createTestingModule({ imports: [ConsumerAppModule] })
+      .overrideProvider(APP_CONFIG)
+      .useValue({
+        ...config,
+        aws: {
+          ...config.aws,
+          queues: { wagerTransactions: queues.queueName, wagerTransactionsDlq: queues.dlqName },
+        },
+      })
+      .compile();
+
+    // A ordem dos dois hooks de shutdown.
+    const hooks: string[] = [];
+    const consumer = moduleRef.get(WagerTransactionsConsumer);
+    const stop = consumer.stop.bind(consumer);
+    consumer.stop = async () => {
+      await stop();
+      hooks.push("consumer.stop terminou");
+    };
+    const orm = moduleRef.get(MikroORM);
+    const close = orm.close.bind(orm);
+    orm.close = async (force?: boolean) => {
+      hooks.push("orm.close começou");
+      await close(force);
+    };
+
     const app = await moduleRef.init();
     try {
-      app.get(WagerTransactionsConsumer).start();
+      consumer.start();
       const deadline = Date.now() + 10_000;
       while ((await effectsOf("provider-a", message.externalTransactionId)).entries.length === 0) {
         if (Date.now() > deadline) throw new Error("o consumer não processou a mensagem em 10 s");
@@ -504,10 +596,12 @@ describe("D7.4 D8.5: o processo consumer (Nest)", () => {
       }
     } finally {
       await app.close();
-      client.destroy();
     }
+
+    expect(hooks).toEqual(["consumer.stop terminou", "orm.close começou"]);
     expect(await balanceOf(w.id)).toBe("75.00");
-  }, SLOW_TEST_MS);
+    await expectQueueEmpty(queues.queueUrl);
+  }, NEST_TEST_MS);
 });
 
 /** Porta reservada e liberada na hora: nada escuta nela (conexão recusada). */

@@ -15,10 +15,18 @@ const RECORD_ATTEMPT_SQL = `
         last_attempt_at = EXCLUDED.last_attempt_at
   RETURNING attempts`;
 
+const CLEAR_ATTEMPTS_SQL = `
+  DELETE FROM message_attempts WHERE consumer_name = ? AND message_id = ?`;
+
 /** Tentativas que falharam por mensagem (D8.3); nunca o `ApproximateReceiveCount`. */
 export interface MessageAttemptsRecorder {
   /** Conta mais uma falha e devolve o total. */
   record(consumerName: string, messageId: string, errorCode: string): Promise<number>;
+  /**
+   * Apaga as tentativas da mensagem (D19.11): depois do ack e depois da
+   * cópia para a DLQ. Uma mensagem devolvida da DLQ começa do zero.
+   */
+  clear(consumerName: string, messageId: string): Promise<void>;
 }
 
 export class MikroOrmMessageAttempts implements MessageAttemptsRecorder {
@@ -30,5 +38,9 @@ export class MikroOrmMessageAttempts implements MessageAttemptsRecorder {
       .execute<{ attempts: number }[]>(RECORD_ATTEMPT_SQL, [consumerName, messageId, errorCode]);
     if (!row) throw new Error("upsert de message_attempts não devolveu linha");
     return row.attempts;
+  }
+
+  async clear(consumerName: string, messageId: string): Promise<void> {
+    await this.orm.em.fork().execute(CLEAR_ATTEMPTS_SQL, [consumerName, messageId]);
   }
 }
