@@ -10,7 +10,7 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 | `*.mapper.ts`                           | Domínio ↔ record. Leitura sempre por `rehydrate` (R-06-03). `undefined` vira `null`. `PENDING` não vira record (D4.1).                                      | D4.1, D6.1, D14.5 |
 | `index.ts`                              | `WAGERING_ENTITIES`, a lista registrada no ORM.                                                                                                             |                   |
 | `outbox-message.schema.ts`, `reconciliation-run.schema.ts` | Linhas que o use case grava na outbox (sem `position`, que é identity, e sem as colunas do publisher) e nas execuções de reconciliação. | D6.9, D9.2, D9.3 |
-| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. | D3, D6.3, D7.1 |
+| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. `lockById` é `SELECT … FOR UPDATE` (`LockMode.PESSIMISTIC_WRITE`); `update` grava saldo, `version` e `updatedAt` no record já travado. Um `UNIQUE` de key ou de id externo violado no commit vira `DuplicateTransactionError` (D3.6). `findReference` calcula `alreadyReversed` = existe `REFUND`/`ROLLBACK` `PROCESSED` com `reference_transaction_id` = a referência (D1.1, D1.3). | D3, D6.3, D7.1, D7.2 |
 | `src/shared/orm/decimal-amount.type.ts` | Tipo customizado: `numeric(20,2)` ↔ string; um `number` em qualquer direção lança erro.                                                                     | D2.4, D7.1        |
 | `src/shared/orm/fk-id.ts`               | FK mapeada como id (string), declarada `m:1` só para o flush inserir wallet → transação → lançamento nessa ordem.                                           |                   |
 | `src/shared/orm/create-orm.ts`          | `MikroORM.init` com `lock_timeout` 2 s e `statement_timeout` 5 s em toda conexão.                                                                           | D5                |
@@ -18,9 +18,11 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 
 Nenhum schema usa `version: true`: a `version` da wallet sobe só em `Wallet.debit`/`credit` (D7.2). A segunda camada é do banco: `UNIQUE (wallet_id, wallet_version)` + trigger de cauda (D15.7).
 
-As colunas de controle do worker (`attempts`, `next_attempt_at`, `locked_until`) existem na tabela, mas ficam fora da entidade e do record (D4.5). O worker da S5 as usa por SQL próprio.
+As colunas de controle do worker (`attempts`, `next_attempt_at`, `locked_until`) existem na tabela, mas ficam fora da entidade (D4.5). Só `next_attempt_at` está no record: o repositório grava `created_at` nela quando a transação nasce `PENDING_REFERENCE`, então ela já entra vencida no claim do worker (D17.4). O resto o worker da S5 usa por SQL próprio.
 
-O `correlation_id` (D9.5) **não** é coluna de controle: é o rastreio da submissão. Ele está no record, mas não na entidade: o repositório (S4) o recebe ao salvar e o passa ao `wagerTransactionToRecord`. É gravado no `INSERT` e imutável depois (trigger `wager_transactions_guard_update`).
+O `correlation_id` (D9.5) **não** é coluna de controle: é o rastreio da submissão. Ele está no record, mas não na entidade: o repositório o recebe ao salvar e o passa ao `wagerTransactionToRecord`. É gravado no `INSERT` e imutável depois (trigger `wager_transactions_guard_update`).
+
+O lock da wallet é o único lock que a submissão pega (D7.2). A referência não é travada: uma referência válida é da mesma wallet, que já está travada, e uma de outra wallet é rejeitada por escopo antes de olhar o estado (D14.2, D17). O pool do `pg` fica no padrão, 10 conexões por processo (D17.5).
 
 ## Modelo de dados
 

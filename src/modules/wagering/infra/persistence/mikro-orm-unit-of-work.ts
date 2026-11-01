@@ -1,15 +1,24 @@
 import {
   type EntityManager,
   IsolationLevel,
+  LockMode,
   UniqueConstraintViolationException,
+  wrap,
 } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { IntegrationEvent } from "../../domain/events/integration-event";
-import type { WagerTransaction } from "../../domain/wager-transaction";
+import {
+  type WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from "../../domain/wager-transaction";
 import type { Wallet } from "../../domain/wallet";
 import type { WalletLedgerEntry } from "../../domain/wallet-ledger-entry";
 import type { WalletReconciliation } from "../../domain/wallet-reconciliation";
-import { DuplicateWalletError } from "../../application/errors";
+import {
+  DuplicateTransactionError,
+  DuplicateWalletError,
+} from "../../application/errors";
 import type {
   IsolationLevel as AppIsolationLevel,
   LedgerRepository,
@@ -22,8 +31,14 @@ import type {
 } from "../../application/ports";
 import { OutboxMessageSchema } from "./outbox-message.schema";
 import { ReconciliationRunSchema } from "./reconciliation-run.schema";
-import { wagerTransactionToRecord } from "./wager-transaction.mapper";
-import { WagerTransactionSchema } from "./wager-transaction.schema";
+import {
+  wagerTransactionFromRecord,
+  wagerTransactionToRecord,
+} from "./wager-transaction.mapper";
+import {
+  type WagerTransactionRecord,
+  WagerTransactionSchema,
+} from "./wager-transaction.schema";
 import {
   ledgerEntryFromRecord,
   ledgerEntryToRecord,
@@ -34,6 +49,14 @@ import { WalletSchema } from "./wallet.schema";
 
 const WALLET_PLAYER_CURRENCY_UQ = "wallets_player_currency_uq";
 
+/** Barreiras finais da idempotência (D3.1, D3.2, D3.6). */
+const TRANSACTION_IDENTITY_UQS: ReadonlySet<string> = new Set([
+  "wager_transactions_provider_key_uq",
+  "wager_transactions_provider_external_uq",
+]);
+
+const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+
 const ISOLATION: Record<AppIsolationLevel, IsolationLevel> = {
   READ_COMMITTED: IsolationLevel.READ_COMMITTED,
   REPEATABLE_READ: IsolationLevel.REPEATABLE_READ,
@@ -42,19 +65,35 @@ const ISOLATION: Record<AppIsolationLevel, IsolationLevel> = {
 /**
  * `em.transactional()` num `EntityManager` novo por chamada (D7.1): o que
  * os repositórios gravam vai num flush só, no commit, e o ORM ordena os
- * INSERTs pelas FKs (wallet → transação → lançamento).
+ * INSERTs pelas FKs (wallet → transação → lançamento). Um `UNIQUE` de key
+ * ou de id externo violado no commit vira `DuplicateTransactionError`
+ * (D3.6).
  */
 export class MikroOrmUnitOfWork implements UnitOfWork {
   constructor(private readonly orm: MikroORM) {}
 
-  run<T>(
+  async run<T>(
     work: (scope: TransactionScope) => Promise<T>,
     options: { isolation?: AppIsolationLevel } = {},
   ): Promise<T> {
-    return this.orm.em.fork().transactional((em) => work(scopeFor(em)), {
-      isolationLevel: ISOLATION[options.isolation ?? "READ_COMMITTED"],
-    });
+    try {
+      return await this.orm.em.fork().transactional((em) => work(scopeFor(em)), {
+        isolationLevel: ISOLATION[options.isolation ?? "READ_COMMITTED"],
+      });
+    } catch (error) {
+      const constraint = violatedUnique(error);
+      if (constraint !== undefined && TRANSACTION_IDENTITY_UQS.has(constraint)) {
+        throw new DuplicateTransactionError(constraint);
+      }
+      throw error;
+    }
   }
+}
+
+function violatedUnique(error: unknown): string | undefined {
+  return error instanceof UniqueConstraintViolationException
+    ? (error as { constraint?: string }).constraint
+    : undefined;
 }
 
 function scopeFor(em: EntityManager): TransactionScope {
@@ -81,6 +120,22 @@ function walletRepository(em: EntityManager): WalletRepository {
       );
       return record?.id;
     },
+    async lockById(id) {
+      const record = await em.findOne(WalletSchema, id, {
+        lockMode: LockMode.PESSIMISTIC_WRITE,
+      });
+      return record ? walletFromRecord(record) : undefined;
+    },
+    // O record gerenciado vem do `lockById`; o flush grava só o que mudou.
+    // A `version` vai como o domínio a deixou (D7.2, D15.7).
+    update(wallet: Wallet) {
+      const record = em.getReference(WalletSchema, wallet.id);
+      if (!wrap(record).isInitialized()) {
+        throw new Error(`wallet ${wallet.id} atualizada sem lockById antes`);
+      }
+      const { balance, version, updatedAt } = walletToRecord(wallet);
+      em.assign(record, { balance, version, updatedAt });
+    },
     // Flush na hora: o UNIQUE é a barreira de duplicata (D6.3), e o erro
     // precisa sair daqui, não do commit.
     async insert(wallet: Wallet) {
@@ -88,11 +143,7 @@ function walletRepository(em: EntityManager): WalletRepository {
       try {
         await em.flush();
       } catch (error) {
-        if (
-          error instanceof UniqueConstraintViolationException &&
-          (error as { constraint?: string }).constraint ===
-            WALLET_PLAYER_CURRENCY_UQ
-        ) {
+        if (violatedUnique(error) === WALLET_PLAYER_CURRENCY_UQ) {
           throw new DuplicateWalletError();
         }
         throw error;
@@ -102,15 +153,40 @@ function walletRepository(em: EntityManager): WalletRepository {
 }
 
 function transactionRepository(em: EntityManager): WagerTransactionRepository {
+  const findOne = async (where: Partial<WagerTransactionRecord>) => {
+    const record = await em.findOne(WagerTransactionSchema, where);
+    return record ? wagerTransactionFromRecord(record) : undefined;
+  };
   return {
     insert(tx: WagerTransaction, correlationId: string) {
-      em.create(
-        WagerTransactionSchema,
-        wagerTransactionToRecord(tx, {
+      em.create(WagerTransactionSchema, {
+        ...wagerTransactionToRecord(tx, {
           updatedAt: tx.processedAt ?? tx.createdAt,
           correlationId,
         }),
-      );
+        // A pendente nasce vencida: o worker a pega no próximo tick (D17.4).
+        nextAttemptAt:
+          tx.status === WagerTransactionStatus.PendingReference ? tx.createdAt : null,
+      });
+    },
+    findById: (id) => findOne({ id }),
+    findByProviderAndKey: (providerId, idempotencyKey) =>
+      findOne({ providerId, idempotencyKey }),
+    findByProviderAndExternalId: (providerId, externalTransactionId) =>
+      findOne({ providerId, externalTransactionId }),
+    async findReference(providerId, referenceExternalTransactionId) {
+      const reference = await findOne({
+        providerId,
+        externalTransactionId: referenceExternalTransactionId,
+      });
+      if (!reference) return { found: false };
+      // Só reversão PROCESSED conta (D1.1, D1.3).
+      const reversals = await em.count(WagerTransactionSchema, {
+        referenceTransactionId: reference.id,
+        status: WagerTransactionStatus.Processed,
+        kind: { $in: REVERSAL_KINDS },
+      });
+      return { found: true, transaction: reference, alreadyReversed: reversals > 0 };
     },
   };
 }

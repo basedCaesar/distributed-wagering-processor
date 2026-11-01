@@ -68,4 +68,4 @@ Interpretações documentadas (R-07-15):
 | `wallet-reconciliation.spec.ts`   | cada divergência da D16.5, diferença com sinal, wallet sem lançamentos, não corrige                                                   |
 | `../lint-domain-purity.spec.ts`   | domínio sem framework, sem `Number(`, `parseFloat`, `parseInt`, `Math.` e `toFixed` (D14.8)                                           |
 
-`test/support/in-memory-book.ts` faz em memória o papel do repositório (busca da referência e `alreadyReversed`), para os testes de regra.
+`test/support/in-memory-book.ts` faz em memória o papel do repositório (busca da referência e `alreadyReversed`), para os testes de regra. O repositório real (S4) faz a mesma busca no Postgres, sob o lock da wallet: ver [`infra/persistence/README.md`](infra/persistence/README.md) e o fluxo da submissão em [`application/README.md`](application/README.md).

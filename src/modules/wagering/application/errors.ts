@@ -21,6 +21,49 @@ export class DuplicateWalletError extends Error {
   }
 }
 
+/** `409 IDEMPOTENCY_KEY_CONFLICT`: mesma key, payload diferente (R-09-16, D17.2). */
+export class IdempotencyKeyConflictError extends ConflictError {
+  constructor(readonly transactionId: string) {
+    super("IDEMPOTENCY_KEY_CONFLICT", "Idempotency-Key já usada com outro payload", {
+      transactionId,
+    });
+  }
+}
+
+/** `409 EXTERNAL_ID_CONFLICT`: o id externo já existe com outra key (D3.2, D17.2). */
+export class ExternalIdConflictError extends ConflictError {
+  constructor(readonly transactionId: string) {
+    super("EXTERNAL_ID_CONFLICT", "externalTransactionId já usado com outra Idempotency-Key", {
+      transactionId,
+    });
+  }
+}
+
+/**
+ * O banco recusou a transação por um `UNIQUE` de key ou de id externo:
+ * outra submissão ganhou fora do lock desta wallet (D3.6). O use case
+ * repete uma vez e cai no replay ou no `409`.
+ */
+export class DuplicateTransactionError extends Error {
+  constructor(readonly constraint: string) {
+    super(constraint);
+    this.name = "DuplicateTransactionError";
+  }
+}
+
+/** Submissão que o domínio recusa só pelo payload (D5): `400`, nada gravado. */
+export class InvalidSubmissionError extends ValidationError {
+  constructor(reason: string) {
+    super("corpo inválido", { issues: [{ path: "", message: reason }] });
+  }
+}
+
+export class TransactionNotFoundError extends NotFoundError {
+  constructor() {
+    super("Transação");
+  }
+}
+
 export class WalletNotFoundError extends NotFoundError {
   constructor() {
     super("Wallet");

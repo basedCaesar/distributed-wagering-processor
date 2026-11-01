@@ -9,7 +9,7 @@ Critérios, em ordem:
 4. não inventar regra que o enunciado não pede;
 5. preferir a opção mais simples entre as corretas.
 
-**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada. D13 aprovada em 30/10/2026, junto com o ajuste da D11.5 (detalhe de cada parte no README dela). D14 aprovada em 30/10/2026. D15 aprovada em 30/10/2026, junto com a criação dos papéis do banco no init do Postgres (as migrations só dão os `GRANT`s). D15.9 e o ajuste da D15.5 (trigger de `INSERT` do `FAILED`) aprovados em 30/10/2026, na correção da revisão da S2. D15.10 e D16 aprovadas em 31/10/2026, no plano da S3 (16.4 com `500` para o `PROCESSING_FAILED`). D16.9–16.16 aprovadas em 31/10/2026, na correção da revisão da S3.
+**Status:** todas aprovadas em 28/10/2026. As três escolhas de gosto (2.1, 9.2, 12.1) ficaram com a opção recomendada. D13 aprovada em 30/10/2026, junto com o ajuste da D11.5 (detalhe de cada parte no README dela). D14 aprovada em 30/10/2026. D15 aprovada em 30/10/2026, junto com a criação dos papéis do banco no init do Postgres (as migrations só dão os `GRANT`s). D15.9 e o ajuste da D15.5 (trigger de `INSERT` do `FAILED`) aprovados em 30/10/2026, na correção da revisão da S2. D15.10 e D16 aprovadas em 31/10/2026, no plano da S3 (16.4 com `500` para o `PROCESSING_FAILED`). D16.9–16.16 aprovadas em 31/10/2026, na correção da revisão da S3. D17 aprovada em 31/10/2026, no plano da S4.
 
 ---
 
@@ -343,6 +343,21 @@ Pontos que o plano da S3 encontrou abertos. Cada um complementa a decisão citad
 | 16.14 | Complementa D13.2. `/docs-json` (o OpenAPI em JSON) é aberto como o `/docs`. | É a mesma documentação, em formato de máquina. | Proteger o JSON: o `/docs` aberto depende dele. |
 | 16.15 | Complementa D10.1 e D5. O corpo é lido (parse do JSON) antes da autenticação, então JSON mal formado responde `400` mesmo sem token. A validação do schema (zod) acontece depois do guard: corpo válido como JSON, mas fora do schema, sem token → `401`. | O parser do corpo é middleware do framework e roda antes dos guards; nada é gravado nem logado nesse caminho. | Autenticar antes do parse: exigiria trocar o parser do framework sem ganho de segurança. |
 | 16.16 | Complementa D5, D10.1 e D16.3. JWKS do emissor indisponível (resposta não-200, conexão recusada ou timeout) → `503 TEMPORARILY_UNAVAILABLE` com `Retry-After`. Timeout do JWKS em `AUTH_JWKS_TIMEOUT_MS` (padrão 5 s, o do `jose`). | O token pode ser válido: a falha é do IdP, transitória. `401` diria ao provedor que o token está errado. | `401`: categoria errada; `500`: não diz que reenviar resolve. |
+
+---
+
+## D17 — Detalhes da submissão de transação (S4)
+Pontos que o plano da S4 encontrou abertos. Cada um complementa a decisão citada.
+
+| # | Decisão | Por quê | Alternativa descartada |
+|---|---|---|---|
+| 17.1 | Complementa D5 e D6.4. `providerId`, `externalTransactionId`, `referenceExternalTransactionId`, `roundId` e `gameId`: string `^[A-Za-z0-9._:-]{1,128}$` (o formato da D6.4). Fora disso → `400 VALIDATION_ERROR`. | Os exemplos do §9 passam, e nenhum texto arbitrário chega aos logs (o `providerId` é campo de log, D11.1). | 1 a 255 caracteres livres: deixa entrar texto arbitrário nos logs. |
+| 17.2 | Complementa D5, D16.2 e R-09-16. Mesma key com payload diferente → `409 IDEMPOTENCY_KEY_CONFLICT`. Os dois conflitos de transação (`IDEMPOTENCY_KEY_CONFLICT` e `EXTERNAL_ID_CONFLICT`) levam `details.transactionId`, o id da transação que já existe. | Um código por situação (D16.2). A transação é do mesmo provedor, então nada vaza; o provedor consegue consultá-la (mesma lógica da D6.3). | Sem `details`: o provedor teria de procurar a transação. |
+| 17.3 | Complementa D16.8. `transactionId` da rota que não é UUID, ou `providerId` da rota fora do formato da 17.1 → `400 VALIDATION_ERROR`. | Decidível só pelo payload (fronteira da D5). | `404`: mistura "não existe" com "pedido mal formado". |
+| 17.4 | Complementa D4.3 e D4.4. A submissão (S4) já grava `PENDING_REFERENCE`, com o evento e `202`, e com `next_attempt_at = created_at` (já vencida). O worker (S5) faz a primeira tentativa no próximo tick e aplica o backoff dali em diante. A "cutucada" (D4.4) entra na S5. | Uma pendente gravada nunca fica sem `next_attempt_at`, então nunca fica fora do claim do worker. | Deixar nulo até a S5: pendentes gravadas antes ficariam invisíveis ao worker. |
+| 17.5 | Complementa D3.6 e R-13-C1. O pool do `pg` fica no padrão (10 conexões por processo). No teste das 50 em paralelo, o lock da wallet é segurado por uma transação crua até as 10 conexões do pool aparecerem esperando no `pg_locks` (as outras 40 ficam na fila do pool); só então é solto. O teste com várias instâncias de verdade (R-13-C4) é da S8. | Prova a disputa real no lock sem mudar a configuração de produção. Várias instâncias são o objeto da S8 (D7.4). | Pool configurável só para o teste caber no `pg_locks`; processos múltiplos já na S4. |
+
+Detalhes seguidos na S4 sem regra nova: `Idempotency-Key` vazia conta como ausente (`400`); campos extras do corpo são descartados, como no `POST /wallets`; ordem na borda: guard (`401`; `403` para quem não é `provider`) → schema (`400`) → `providerId` do corpo ≠ token (`403`) → use case; a checagem rápida da key (antes do lock) vem antes da busca da wallet; a referência não é travada, porque uma referência válida é da wallet já travada (D14.2: escopo antes de estado).
 
 ---
 

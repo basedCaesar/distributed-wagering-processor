@@ -17,7 +17,10 @@ import {
   type UnitOfWork,
 } from "../application/ports";
 import { ReconcileWalletUseCase } from "../application/reconcile-wallet.use-case";
+import { SubmitWagerTransactionUseCase } from "../application/submit-wager-transaction.use-case";
+import { TransactionQueries } from "../application/transaction-queries";
 import { WalletQueries } from "../application/wallet-queries";
+import { WagerTransactionsController } from "./http/wager-transactions.controller";
 import { WalletsController } from "./http/wallets.controller";
 import {
   PinoReconciliationLog,
@@ -30,7 +33,7 @@ import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
  * `application/`; aqui só se escolhem os adaptadores.
  */
 @Module({
-  controllers: [WalletsController],
+  controllers: [WalletsController, WagerTransactionsController],
   providers: [
     {
       provide: UNIT_OF_WORK,
@@ -60,6 +63,17 @@ import { MikroOrmUnitOfWork } from "./persistence/mikro-orm-unit-of-work";
     {
       provide: WalletQueries,
       useFactory: (uow: UnitOfWork) => new WalletQueries(uow),
+      inject: [UNIT_OF_WORK],
+    },
+    {
+      provide: SubmitWagerTransactionUseCase,
+      useFactory: (uow: UnitOfWork, ids: IdGenerator, clock: Clock) =>
+        new SubmitWagerTransactionUseCase(uow, ids, clock),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, CLOCK],
+    },
+    {
+      provide: TransactionQueries,
+      useFactory: (uow: UnitOfWork) => new TransactionQueries(uow),
       inject: [UNIT_OF_WORK],
     },
     {

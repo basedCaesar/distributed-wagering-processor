@@ -1,5 +1,6 @@
 import type { IntegrationEvent } from "../domain/events/integration-event";
 import type { WagerTransaction } from "../domain/wager-transaction";
+import type { ReferenceLookup } from "../domain/wager-transaction-rules";
 import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import type {
@@ -18,6 +19,13 @@ export interface Clock {
 
 export interface WalletRepository {
   findById(id: string): Promise<Wallet | undefined>;
+  /**
+   * `SELECT … FOR UPDATE` (D7.2): segura a wallet até o fim da transação.
+   * Espera no máximo o `lock_timeout` (D5); estourou → erro transitório.
+   */
+  lockById(id: string): Promise<Wallet | undefined>;
+  /** Grava saldo, `version` e `updatedAt` como o domínio deixou (D7.2). Só depois do `lockById`. */
+  update(wallet: Wallet): void;
   findIdByPlayerAndCurrency(
     playerId: string,
     currency: string,
@@ -27,8 +35,33 @@ export interface WalletRepository {
 }
 
 export interface WagerTransactionRepository {
-  /** `correlationId` da submissão vai para a linha, não para a entidade (D9.5). */
+  /**
+   * `correlationId` da submissão vai para a linha, não para a entidade
+   * (D9.5). Uma `PENDING_REFERENCE` nasce já vencida para o worker (D17.4).
+   * Key ou id externo repetido → `DuplicateTransactionError` no commit (D3.6).
+   */
   insert(tx: WagerTransaction, correlationId: string): void;
+  findById(id: string): Promise<WagerTransaction | undefined>;
+  /** Unicidade da D3.1. */
+  findByProviderAndKey(
+    providerId: string,
+    idempotencyKey: string,
+  ): Promise<WagerTransaction | undefined>;
+  /** Unicidade da D3.2. */
+  findByProviderAndExternalId(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | undefined>;
+  /**
+   * Referência por `(providerId, referenceExternalTransactionId)` (R-07-07).
+   * `alreadyReversed` = existe `REFUND` ou `ROLLBACK` `PROCESSED` cujo
+   * `reference_transaction_id` é ela; reversões `REJECTED` ou pendentes
+   * não contam (D1.1, D1.3).
+   */
+  findReference(
+    providerId: string,
+    referenceExternalTransactionId: string,
+  ): Promise<ReferenceLookup>;
 }
 
 export interface LedgerRepository {
