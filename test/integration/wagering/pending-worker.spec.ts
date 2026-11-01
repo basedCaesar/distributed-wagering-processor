@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { payloadHash } from "../../../src/modules/wagering/application/payload-hash";
 import type { UnitOfWork } from "../../../src/modules/wagering/application/ports";
 import { Money } from "../../../src/modules/wagering/domain/money";
-import { WagerTransactionKind } from "../../../src/modules/wagering/domain/wager-transaction";
+import type { WagerTransactionKind } from "../../../src/modules/wagering/domain/wager-transaction";
 import { startTestApi, type TestApi } from "../../support/api";
 import { connect, newId, withClient } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";

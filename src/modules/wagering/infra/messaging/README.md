@@ -1,6 +1,10 @@
-# wagering — consumidor SQS
+# wagering — consumidores SQS (consumer e event-auditor)
 
-Processo `consumer` (R-10-*, D8, D19). Lê a `wager-transactions.fifo` e chama **o mesmo** use case do HTTP, com a inbox (R-10-03, D19.4). Entrypoint: `src/entrypoints/main-consumer.ts`; módulo raiz: `src/app/consumer.module.ts` (sem HTTP). Quem produz na fila são os provedores; o sistema não publica nela (D8.1).
+Dois processos usam o mesmo laço (`SqsConsumer`, D20.2):
+- `consumer` (R-10-*, D8, D19): lê a `wager-transactions.fifo` e chama **o mesmo** use case do HTTP, com a inbox (R-10-03, D19.4). Entrypoint: `src/entrypoints/main-consumer.ts`; módulo raiz: `src/app/consumer.module.ts`. Quem produz nessa fila são os provedores; o sistema não publica nela (D8.1);
+- `event-auditor` (R-11-03, D9.7, D20.1, D20.2): lê a `wagering-events-auditor.fifo`, assinante do tópico de eventos, e audita cada evento uma vez (seção [Auditor](#auditor-r-11-03-d97-d201-d202)). Entrypoint: `src/entrypoints/main-event-auditor.ts`; módulo raiz: `src/app/event-auditor.module.ts`.
+
+Nenhum dos dois tem HTTP.
 
 ## Peças
 
@@ -9,8 +13,12 @@ Processo `consumer` (R-10-*, D8, D19). Lê a `wager-transactions.fifo` e chama *
 | `wager-message.schema.ts` | Envelope do §10 → comando do use case. `messageId` = texto não vazio de até 255; `type` só `WagerTransactionRequested`; `occurredAt` ISO 8601; `data` = **o mesmo zod** do corpo HTTP mais o `idempotencyKey` (zod do header). Campos extras descartados, como no HTTP. JSON quebrado ou fora do schema → `ValidationError`. | R-10-02 · D3.8, D5, D19.5 |
 | `consumer-policy.ts` | Valores (long poll 20 s, 10 por receive, visibilidade 120 s, limite 8, teto 300 s, prazo do `stop()` 20 s + 5 s, espera entre receives que falham de 1 s a 30 s) e funções puras: backoff 2ⁿ s, espera do receive, limite esgotado, destino de cada categoria de erro. | D8.2, D8.3, D8.5, D19.1, D19.2, D19.6, D19.9, D19.10 |
 | `sqs-wager-queue.ts` | Receive (com grupo, deduplicação, `ApproximateReceiveCount` e atributos), ack, visibilidade e a cópia para a DLQ: **envia e só depois apaga**. Se o envio deu certo e o delete falhou, sobe `DeadLetterDeleteError`, para o log distinguir os dois casos. | R-10-01 · D8.2, D19.6, D19.9 |
-| `wager-transactions-consumer.ts` | O laço (com a espera da D19.10), `pollOnce()` (um receive e o lote; é o que os testes usam), `start()`/`stop()`, a ordem no grupo. | R-10-03..09 · D8, D19 |
+| `sqs-consumer.ts` | O laço genérico (`SqsConsumer`): receive com a espera da D19.10, `pollOnce()` (um receive e o lote; é o que os testes usam), `start()`/`stop()`, a ordem no grupo, a taxonomia de erros, a DLQ, o `message_attempts` e o ack depois do efeito. Cada consumidor só dá o `MessageParser`: corpo → `messageId`, contexto de log e o efeito. | R-10-05..09 · D8, D19, D20.2 |
+| `wager-transactions-consumer.ts` | O consumidor das transações: o envelope do §10 e a chamada ao use case da submissão com a inbox. | R-10-03, R-10-04 · D19.4, D19.5 |
 | `consumer.module.ts` | Resolve as URLs das filas configuradas, liga o use case, o `message_attempts` e o laço; no shutdown, para o consumidor antes de o ORM fechar. | D7.4 |
+| `event-envelope.schema.ts` | Envelope do §11 em zod: `eventId` e `aggregateId` UUID, `eventType` com formato de nome de evento (qualquer tipo), `occurredAt` ISO 8601, `version` ≥ 1; no `data`, `walletId` (UUID) e `walletVersion` (inteiro ≥ 1, só com `walletId`) quando existem. O envelope cru vai junto, para o hash. | R-11-09 · D20.1, D20.2 |
+| `event-auditor.ts` | O auditor: `SqsConsumer` com o parser do envelope e o use case `AuditIntegrationEventUseCase`; fora de ordem → log `error` e `audited_events_out_of_order_total`. | D9.7, D20.1, D20.2 |
+| `event-auditor.module.ts` | Resolve a fila do auditor e a DLQ dele, liga o use case e o laço; no shutdown, para o auditor antes de o ORM fechar. | D7.4, D20.2 |
 | `../persistence/message-attempts.ts` | Upsert da tentativa em `message_attempts` e o `DELETE` das tentativas depois do ack ou da DLQ, em autocommit (fora da transação do use case). | D8.3, D19.11 |
 
 A inbox fica no use case, não aqui: `TransactionScope.inbox.register` (`INSERT … ON CONFLICT DO NOTHING`, com `processed_at = now()`) é o primeiro comando da transação, antes do lock da wallet. Detalhe em [`application/README.md`](../../application/README.md#pela-fila-r-10-03-r-10-04-d194).
@@ -77,9 +85,19 @@ Por que não abortar: o abort fecha só a conexão do cliente. O `ReceiveMessage
 
 O teste do sinal real (processo separado) é da S8; aqui, o `stop()` é testado direto (D19.7).
 
+## Auditor (R-11-03, D9.7, D20.1, D20.2)
+
+Prova a L594 ("uma publicação duplicada continua segura para o consumidor") e confere a ordem dos eventos por wallet. Para cada mensagem da fila assinante (o corpo é o envelope, `RawMessageDelivery`), numa transação só (`AuditIntegrationEventUseCase`):
+
+1. inbox por `(event-auditor, eventId)`, com hash = SHA-256 do JSON canônico do envelope inteiro (`envelopeHash`; a ordem de chaves do `jsonb` não muda o hash). Já auditado → `duplicate`, sem efeito; mesmo `eventId` com outro conteúdo → `InboxConflictError` → DLQ do auditor;
+2. checagem de ordem por **(wallet, tipo de evento)**: a `walletVersion` precisa ser estritamente maior que a última auditada da mesma wallet e do mesmo tipo. A chave inclui o tipo porque `WagerTransactionProcessed` e `WalletBalanceChanged` da mesma transação têm a mesma versão (D9.4);
+3. uma linha em `audited_events` (`event_id`, tipo, agregado, `wallet_id`, `wallet_version`, `in_order`, ordem de chegada), gravada mesmo fora de ordem. Fora de ordem → log `error` e `audited_events_out_of_order_total`.
+
+Evento sem `walletVersion` (rejeição, pendente) → `in_order` nulo, sem checagem. Qualquer `eventType` com envelope válido é aceito. O resto (DLQ própria `wagering-events-auditor-dlq.fifo`, `message_attempts`, ordem no grupo, `stop()`) é o mesmo do consumidor, pelo `SqsConsumer`.
+
 ## Logs
 
-`correlationId` e `messageId` (o do corpo, D9.5), `walletId` e `providerId` no contexto; a categoria e o código do erro; o número da tentativa. Nunca valores, saldos, payload nem `playerId` (D11.1).
+`correlationId` e `messageId` (o do corpo, D9.5; no auditor, o `eventId`), `walletId` e `providerId` no contexto; a categoria e o código do erro; o número da tentativa. Nunca valores, saldos, payload nem `playerId` (D11.1).
 
 ## Testes
 
@@ -92,7 +110,11 @@ O teste do sinal real (processo separado) é da S8; aqui, o `stop()` é testado 
 | `test/unit/application/submit-inbox.spec.ts` | inbox antes do lock, sem checagem rápida; hash da inbox; duplicata sem lock, contada em `inbox`; conflito → `InboxConflictError`; a repetição da D3.6 grava a inbox de novo (falha se a 2ª chamada não levar a inbox); HTTP sem inbox |
 | `test/integration/messaging/consumer.spec.ts` | §10 literal com só `MessageGroupId`, com `consumer_name` único por rodada e a linha da inbox `msg-123` provando que o use case rodou; mesma mensagem duas vezes → um efeito; mesmo `messageId` com outro `occurredAt` → duplicata, com outro payload → DLQ; outro `messageId` com a mesma key → replay; HTTP e depois fila → replay (R-10-03); `REJECTED` e `PENDING_REFERENCE` → ack; JSON, `type`, `OPENING`, wallet inexistente, conflito de key e de id externo → DLQ intacta; wallet travada → tentativas e DLQ no limite; backoff de 2 s (não 120 s); banco inalcançável → redrive; tentativas apagadas na DLQ e no ack, e a mensagem devolvida da DLQ começa do zero (D19.11); 1ª do grupo em retry → a 2ª volta sem processar e só é aplicada depois (D19.6); erro dentro da transação → rollback, sem ack, nada gravado; `stop()` no meio do lote; `stop()` durante um long poll vazio não prende a mensagem (falha com o abort antigo, D19.9); o `ConsumerAppModule` consome o par de filas do teste e, no shutdown, o `stop()` termina antes de o ORM fechar (falha sem o `ConsumerShutdown`) |
 | `test/concurrency/consumer.spec.ts` | R-13-C5: `DeleteMessage` que nunca chega (morto entre o commit e o ack) → a reentrega vai para outra instância, que vê a inbox; a mesma mensagem em 3 instâncias → um efeito, as duas duplicatas esperando a chave da inbox (`pg_locks`) |
+| `test/unit/messaging/event-envelope.spec.ts` | envelope do §11: válido, qualquer `eventType`, sem `walletVersion`; JSON quebrado, ids que não são UUID, `occurredAt`, `version`, `walletVersion` sem `walletId`, zero ou fracionária → `ValidationError` |
+| `test/unit/application/audit-integration-event.spec.ts` | inbox antes da linha auditada; hash do envelope independente da ordem das chaves; duplicata sem linha nova; conflito → `InboxConflictError`; Processed e BalanceChanged com a mesma versão sem alarme; versão menor ou igual do mesmo tipo → fora de ordem, linha gravada; sem `walletVersion` → sem checagem |
+| `test/integration/outbox/event-auditor.spec.ts` | o mesmo evento entregue duas vezes (fora da janela de deduplicação, D20.6) → auditado uma vez; mesmo `eventId` com outro conteúdo → DLQ intacta; envelope inválido → DLQ; Processed e BalanceChanged com a mesma versão sem alarme e BalanceChanged menor com alarme (falha se a checagem for só por wallet); da API ao auditor, tudo em ordem |
+| `test/integration/outbox/processes.spec.ts` | o `EventAuditorAppModule` consome a fila configurada e, no shutdown, o `stop()` termina antes de o ORM fechar (falha sem o hook) |
 
 **Limitação aceita do teste do backoff de 2 s:** a reentrega medida no SQS só mostra que a mensagem voltou dentro da janela do long poll (6 s), e a contagem de mensagens em voo é aproximada. O valor exato de 2ⁿ s é garantido pelo teste de unidade (`consumer-policy.spec.ts`); o de integração só prova que o retry não fica com os 120 s do receive.
 
-`test/support/sqs.ts` cria um par de filas FIFO por teste, com os atributos do init (D19.8). `test/support/consumer.ts` monta um consumidor sobre um MikroORM próprio (duas chamadas = duas instâncias), com falhas injetáveis na unidade de trabalho e no cliente SQS.
+`test/support/sqs.ts` cria um par de filas FIFO por teste, com os atributos do init (D19.8). `test/support/consumer.ts` monta um consumidor sobre um MikroORM próprio (duas chamadas = duas instâncias), com falhas injetáveis na unidade de trabalho e no cliente SQS. `test/support/auditor.ts` faz o mesmo para o auditor, com o envelope do §11 em texto.

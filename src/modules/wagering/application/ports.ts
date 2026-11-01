@@ -170,6 +170,27 @@ export interface InboxRepository {
   register(entry: InboxEntry): Promise<InboxRegistration>;
 }
 
+/** Linha de `audited_events` (D9.7, D20.1). */
+export interface AuditedEventRow {
+  eventId: string;
+  eventType: string;
+  aggregateId: string;
+  walletId?: string;
+  walletVersion?: number;
+  /** Resultado da checagem de ordem; `null` sem `walletVersion` (D20.1). */
+  inOrder: boolean | null;
+  occurredAt: Date;
+  /** `now()` da transação (D18.12). */
+  auditedAt: Date;
+}
+
+/** O efeito do `event-auditor` (D9.7, D20.1). Só `INSERT`. */
+export interface AuditedEventRepository {
+  /** A maior `walletVersion` auditada para a wallet e o tipo de evento. */
+  lastWalletVersion(walletId: string, eventType: string): Promise<number | undefined>;
+  insert(row: AuditedEventRow): Promise<void>;
+}
+
 /** Repositórios presos a uma transação SQL aberta pelo use case. */
 export interface TransactionScope {
   /**
@@ -184,6 +205,7 @@ export interface TransactionScope {
   outbox: OutboxWriter;
   reconciliationRuns: ReconciliationRunRepository;
   inbox: InboxRepository;
+  auditedEvents: AuditedEventRepository;
 }
 
 export type IsolationLevel = "READ_COMMITTED" | "REPEATABLE_READ";

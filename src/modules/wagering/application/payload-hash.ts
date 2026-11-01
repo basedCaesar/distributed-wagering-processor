@@ -51,6 +51,15 @@ export function payloadHash(fields: PayloadHashFields): string {
 }
 
 /**
+ * Hash da inbox do auditor (D20.1) = SHA-256 (hex) do JSON canônico do
+ * envelope inteiro. Chaves ordenadas: a ordem do `jsonb` (D20.9) não muda
+ * o hash; qualquer mudança de conteúdo muda.
+ */
+export function envelopeHash(envelope: unknown): string {
+  return createHash("sha256").update(canonicalJson(envelope)).digest("hex");
+}
+
+/**
  * Hash da inbox (D3.8) = SHA-256 (hex) do JSON canônico de `payloadHash` e
  * `type`. Fora `occurredAt`, a key e o `messageId`: um reenvio do produtor
  * com outro `occurredAt` é a mesma mensagem.

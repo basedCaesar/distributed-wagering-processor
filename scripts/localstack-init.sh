@@ -24,9 +24,24 @@ awslocal sns create-topic \
   --name wagering-events.fifo \
   --attributes FifoTopic=true
 
+# DLQ do auditor (D20.2): permanentes copiados pelo próprio auditor; o redrive é a rede de segurança.
+awslocal sqs create-queue \
+  --queue-name wagering-events-auditor-dlq.fifo \
+  --attributes FifoQueue=true
+
+AUDITOR_DLQ_URL=$(awslocal sqs get-queue-url --queue-name wagering-events-auditor-dlq.fifo --query QueueUrl --output text)
+AUDITOR_DLQ_ARN=$(awslocal sqs get-queue-attributes --queue-url "$AUDITOR_DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
+
+cat > /tmp/wagering-events-auditor-attrs.json <<EOF
+{
+  "FifoQueue": "true",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"${AUDITOR_DLQ_ARN}\",\"maxReceiveCount\":\"20\"}"
+}
+EOF
+
 awslocal sqs create-queue \
   --queue-name wagering-events-auditor.fifo \
-  --attributes FifoQueue=true
+  --attributes file:///tmp/wagering-events-auditor-attrs.json
 
 AUDITOR_URL=$(awslocal sqs get-queue-url --queue-name wagering-events-auditor.fifo --query QueueUrl --output text)
 AUDITOR_ARN=$(awslocal sqs get-queue-attributes --queue-url "$AUDITOR_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)

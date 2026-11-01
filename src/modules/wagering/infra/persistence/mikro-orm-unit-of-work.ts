@@ -20,6 +20,8 @@ import {
 } from "../../application/errors";
 import type {
   IsolationLevel as AppIsolationLevel,
+  AuditedEventRepository,
+  AuditedEventRow,
   InboxEntry,
   InboxRepository,
   LedgerRepository,
@@ -86,6 +88,16 @@ const INBOX_INSERT_SQL = `
 
 const INBOX_HASH_SQL = `
   SELECT payload_hash FROM inbox_messages WHERE consumer_name = ? AND message_id = ?`;
+
+/** A última versão auditada por (wallet, tipo) (D20.1); índice `audited_events_wallet_type_ix`. */
+const LAST_AUDITED_VERSION_SQL = `
+  SELECT max(wallet_version) AS last FROM audited_events
+   WHERE wallet_id = ? AND event_type = ? AND wallet_version IS NOT NULL`;
+
+const INSERT_AUDITED_EVENT_SQL = `
+  INSERT INTO audited_events
+    (event_id, event_type, aggregate_id, wallet_id, wallet_version, in_order, occurred_at, audited_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
 
 /** O `now()` da transação (D18.12), truncado em milissegundos. */
 const NOW_SQL = `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS now`;
@@ -155,6 +167,28 @@ function scopeFor(em: EntityManager): TransactionScope {
     outbox: outboxWriter(em),
     reconciliationRuns: reconciliationRunRepository(em),
     inbox: inboxRepository(em),
+    auditedEvents: auditedEventRepository(em),
+  };
+}
+
+function auditedEventRepository(em: EntityManager): AuditedEventRepository {
+  return {
+    async lastWalletVersion(walletId: string, eventType: string) {
+      const [row] = await em.execute<{ last: number | null }[]>(LAST_AUDITED_VERSION_SQL, [walletId, eventType]);
+      return row?.last ?? undefined;
+    },
+    async insert(row: AuditedEventRow) {
+      await em.execute(INSERT_AUDITED_EVENT_SQL, [
+        row.eventId,
+        row.eventType,
+        row.aggregateId,
+        row.walletId ?? null,
+        row.walletVersion ?? null,
+        row.inOrder,
+        row.occurredAt,
+        row.auditedAt,
+      ]);
+    },
   };
 }
 

@@ -24,9 +24,14 @@ export function loadConfig(
         wagerTransactions: env.QUEUE_WAGER_TRANSACTIONS,
         wagerTransactionsDlq: env.QUEUE_WAGER_TRANSACTIONS_DLQ,
         wageringEventsAuditor: env.QUEUE_WAGERING_EVENTS_AUDITOR,
+        wageringEventsAuditorDlq: env.QUEUE_WAGERING_EVENTS_AUDITOR_DLQ,
       },
     },
     healthCheckTimeoutMs: env.HEALTH_CHECK_TIMEOUT_MS,
+    outbox: {
+      leaseMs: env.OUTBOX_LEASE_MS,
+      snsRequestTimeoutMs: env.OUTBOX_SNS_REQUEST_TIMEOUT_MS,
+    },
   });
 
   if (!parsed.success) {

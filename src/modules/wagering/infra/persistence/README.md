@@ -11,7 +11,9 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 | `index.ts`                              | `WAGERING_ENTITIES`, a lista registrada no ORM.                                                                                                             |                   |
 | `outbox-message.schema.ts`, `reconciliation-run.schema.ts` | Linhas que o use case grava na outbox (sem `position`, que é identity, e sem as colunas do publisher) e nas execuções de reconciliação. | D6.9, D9.2, D9.3 |
 | `pending-queue.ts`                      | `PendingQueue` da `application/`: o claim do worker de pendentes (ver abaixo). | D4.3, D18.2, D18.9, D18.10 |
-| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. `now()` é o `now()` da transação no Postgres, devolvido em ISO UTC com milissegundos (o MikroORM troca os parsers do `pg`, e um `timestamptz` cru chegaria como string); todo horário gravado vem dele (D18.12). O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. `lockById` é `SELECT … FOR UPDATE` (`LockMode.PESSIMISTIC_WRITE`); `update` grava saldo, `version` e `updatedAt` no record já travado. Um `UNIQUE` de key ou de id externo violado no commit vira `DuplicateTransactionError` (D3.6). `findReference` calcula `alreadyReversed` = existe `REFUND`/`ROLLBACK` `PROCESSED` com `reference_transaction_id` = a referência (D1.1, D1.3). | D3, D6.3, D7.1, D7.2 |
+| `outbox-store.ts`                       | `OutboxStore` do publisher: claim por cabeça de wallet com `SKIP LOCKED`, lease e dono; marcar como publicado e gravar a falha só para o dono. Detalhe em [`infra/outbox/README.md`](../outbox/README.md). | D9.2, D9.6, D20.3–20.5 |
+| `message-attempts.ts`                   | Tentativas por mensagem dos consumidores SQS (upsert e `DELETE` no ack e na DLQ). | D8.3, D19.11 |
+| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. `now()` é o `now()` da transação no Postgres, devolvido em ISO UTC com milissegundos (o MikroORM troca os parsers do `pg`, e um `timestamptz` cru chegaria como string); todo horário gravado vem dele (D18.12). O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. `lockById` é `SELECT … FOR UPDATE` (`LockMode.PESSIMISTIC_WRITE`); `update` grava saldo, `version` e `updatedAt` no record já travado. Um `UNIQUE` de key ou de id externo violado no commit vira `DuplicateTransactionError` (D3.6). `findReference` calcula `alreadyReversed` = existe `REFUND`/`ROLLBACK` `PROCESSED` com `reference_transaction_id` = a referência (D1.1, D1.3). `inbox.register` e `auditedEvents` (a última versão por wallet e tipo, e o `INSERT` em `audited_events`, D20.1) são SQL cru, executado na hora dentro da transação. | D3, D6.3, D7.1, D7.2, D19.4, D20.1 |
 | `src/shared/orm/decimal-amount.type.ts` | Tipo customizado: `numeric(20,2)` ↔ string; um `number` em qualquer direção lança erro.                                                                     | D2.4, D7.1        |
 | `src/shared/orm/fk-id.ts`               | FK mapeada como id (string), declarada `m:1` só para o flush inserir wallet → transação → lançamento nessa ordem.                                           |                   |
 | `src/shared/orm/create-orm.ts`          | `MikroORM.init` com `lock_timeout` 2 s e `statement_timeout` 5 s em toda conexão.                                                                           | D5                |
@@ -90,11 +92,20 @@ erDiagram
         uuid ordering_key "walletId"
         jsonb payload
         timestamptz published_at
+        uuid locked_by "dono do lease (D20.5)"
     }
     message_attempts {
         text consumer_name PK
         text message_id PK
         int attempts
+    }
+    audited_events {
+        uuid event_id PK
+        bigint arrival "identity: ordem de chegada"
+        text event_type
+        uuid wallet_id
+        int wallet_version
+        boolean in_order "D20.1"
     }
     reconciliation_runs {
         uuid id PK
@@ -103,7 +114,7 @@ erDiagram
     }
 ```
 
-`inbox_messages`, `outbox_messages` e `message_attempts` não têm FK: guardam mensagens, não estado financeiro.
+`inbox_messages`, `outbox_messages`, `message_attempts` e `audited_events` não têm FK: guardam mensagens, não estado financeiro. `audited_events` é o efeito do `event-auditor` (D9.7, D20.1): só `INSERT` para a app.
 
 ## Papéis
 
@@ -143,6 +154,8 @@ Todos com o papel da app, menos os marcados "dono": com a app, o privilégio rec
 | Dois escritores sem lock → um recusado (D15.7)                   | `wallet_ledger_entries_wallet_version_uq`                                                                                             | `ledger.spec.ts` (corrida real, sincronizada por `pg_locks`) |
 | Inbox por `(consumer_name, message_id)` (D3.7)                   | `inbox_messages_pk`                                                                                                                   | `messaging-and-reconciliation.spec.ts`                       |
 | Reconciliação append-only (D6.9)                                 | sem privilégio + trigger `reconciliation_runs_append_only` (dono)                                                                     | `messaging-and-reconciliation.spec.ts`                       |
+| Evento auditado uma vez; `in_order` só com `wallet_version`, que só existe com `wallet_id`; sem `UPDATE`/`DELETE` (D20.1) | `audited_events_pk`, `…_in_order_ck`, `…_version_wallet_ck`, `…_version_ck`, sem privilégio | `outbox-and-audit.spec.ts` |
+| Dono do lease da outbox gravável pela app (D20.5) | `GRANT UPDATE (locked_by)` | `outbox-and-audit.spec.ts` |
 | Papel restrito (o único `DELETE` é em `message_attempts`, D19.11; nenhum `TRUNCATE`) | `GRANT`s das migrations                                                                                                               | `privileges.spec.ts` (inclusive pelo catálogo `role_table_grants`), `ledger.spec.ts` |
 
 Os triggers diferidos (cauda e D15.9) conferem no `COMMIT` e releem as linhas, porque transação, lançamento e saldo são gravados em comandos separados. Os triggers levantam SQLSTATE `23000` com o nome da garantia em `constraint`, como as constraints nativas.
