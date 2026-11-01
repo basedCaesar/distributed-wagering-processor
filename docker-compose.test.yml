@@ -1,3 +1,5 @@
+name: distributed-wagering-processor-test
+
 services:
   postgres_test:
     image: postgres:16-alpine
