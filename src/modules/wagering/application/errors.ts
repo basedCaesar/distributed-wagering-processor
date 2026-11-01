@@ -41,6 +41,16 @@ export class ExternalIdConflictError extends ConflictError {
 }
 
 /**
+ * Mesmo `messageId` com outro conteúdo (D3.8): bug do produtor. Na fila é
+ * permanente e vai para a DLQ, que guarda a evidência (D19.4).
+ */
+export class InboxConflictError extends ConflictError {
+  constructor() {
+    super("INBOX_MESSAGE_CONFLICT", "messageId já processado com outro conteúdo");
+  }
+}
+
+/**
  * O banco recusou a transação por um `UNIQUE` de key ou de id externo:
  * outra submissão ganhou fora do lock desta wallet (D3.6). O use case
  * repete uma vez e cai no replay ou no `409`.

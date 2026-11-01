@@ -95,13 +95,14 @@ export function transactionRow(
 /** Wallet com `OPENING` e lançamento v1 quando o saldo é positivo (D6.2). */
 export async function seedWallet(
   client: Client,
-  options: { balance?: string; currency?: string; playerId?: string } = {},
+  options: { balance?: string; currency?: string; playerId?: string; id?: string } = {},
 ): Promise<SeededWallet> {
   const balance = options.balance ?? "0.00";
   const row = walletRow({
     balance,
     currency: options.currency ?? "BRL",
     ...(options.playerId ? { player_id: options.playerId } : {}),
+    ...(options.id ? { id: options.id } : {}),
   });
   const wallet: SeededWallet = {
     id: String(row.id),

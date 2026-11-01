@@ -144,6 +144,32 @@ export interface ReconciliationRunRepository {
   }): void;
 }
 
+/** Registro da inbox do consumidor (R-10-04, D3.7, D3.8). */
+export interface InboxEntry {
+  consumerName: string;
+  /** O `messageId` do corpo da mensagem, não o do SQS (D3.7). */
+  messageId: string;
+  /** `inboxHash`: o `payloadHash` mais o `type` (D3.8). */
+  hash: string;
+}
+
+/**
+ * - `new`: primeira vez; a linha está gravada nesta transação;
+ * - `duplicate`: já processada com o mesmo hash (D3.8);
+ * - `conflict`: já existe com outro hash (D3.8, permanente).
+ */
+export type InboxRegistration = "new" | "duplicate" | "conflict";
+
+export interface InboxRepository {
+  /**
+   * `INSERT … ON CONFLICT DO NOTHING` com `processed_at = now()`: a linha
+   * só fica se a transação commitar, junto com o efeito (§11, D19.4). Uma
+   * duplicata simultânea espera aqui, na chave, até a primeira terminar
+   * (lock 1 da ordem, CLAUDE.md).
+   */
+  register(entry: InboxEntry): Promise<InboxRegistration>;
+}
+
 /** Repositórios presos a uma transação SQL aberta pelo use case. */
 export interface TransactionScope {
   /**
@@ -157,6 +183,7 @@ export interface TransactionScope {
   ledger: LedgerRepository;
   outbox: OutboxWriter;
   reconciliationRuns: ReconciliationRunRepository;
+  inbox: InboxRepository;
 }
 
 export type IsolationLevel = "READ_COMMITTED" | "REPEATABLE_READ";
@@ -191,9 +218,10 @@ export interface ReconciliationLog {
  * - `fast_path`: checagem rápida, antes do lock (operação antiga);
  * - `lock`: checagem autoritativa, depois do lock da wallet (D3.6);
  * - `unique_index`: o `UNIQUE` de key ou de id externo barrou o commit
- *   (outra wallet, outro lock); a repetição que vem depois não conta de novo.
+ *   (outra wallet, outro lock); a repetição que vem depois não conta de novo;
+ * - `inbox`: mensagem da fila já processada (mesmo `messageId`, D19.4).
  */
-export type DuplicateLayer = "fast_path" | "lock" | "unique_index";
+export type DuplicateLayer = "fast_path" | "lock" | "unique_index" | "inbox";
 
 /** Contagem de duplicatas por camada (D11.2, D17.7). */
 export interface SubmissionMetrics {

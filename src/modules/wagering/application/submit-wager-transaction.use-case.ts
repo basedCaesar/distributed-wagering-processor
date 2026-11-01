@@ -12,11 +12,18 @@ import {
   DuplicateTransactionError,
   ExternalIdConflictError,
   IdempotencyKeyConflictError,
+  InboxConflictError,
   InvalidSubmissionError,
   WalletNotFoundError,
 } from "./errors";
-import { payloadHash } from "./payload-hash";
-import type { IdGenerator, OperationMeta, SubmissionMetrics, UnitOfWork } from "./ports";
+import { inboxHash, payloadHash } from "./payload-hash";
+import type {
+  IdGenerator,
+  InboxEntry,
+  OperationMeta,
+  SubmissionMetrics,
+  UnitOfWork,
+} from "./ports";
 import { eventsForTransition } from "./transaction-events";
 
 /** Horário da cópia que só valida o payload, antes do banco (nunca é gravada). */
@@ -42,6 +49,22 @@ export interface SubmissionResult {
   idempotentReplay: boolean;
 }
 
+/** A mensagem da fila que trouxe o comando (R-10-04, D3.7). */
+export interface InboxMessage {
+  consumerName: string;
+  /** O `messageId` do corpo (D3.7). */
+  messageId: string;
+  /** O `type` do envelope; entra no hash da inbox (D3.8). */
+  type: string;
+}
+
+/** A mensagem já foi processada (mesmo `messageId` e hash): nada a fazer (D19.4). */
+export interface DuplicateMessage {
+  duplicateMessage: true;
+}
+
+const DUPLICATE_MESSAGE: DuplicateMessage = { duplicateMessage: true };
+
 /**
  * Submissão de uma transação do provedor (R-09-10..17, D3, D4.1, D7.2).
  *
@@ -57,6 +80,13 @@ export interface SubmissionResult {
  *
  * Cada duplicata de key é contada pela camada que a pegou (D11.2, D17.7).
  *
+ * **Fila** (R-10-03, D19.4): o consumidor chama este mesmo use case com a
+ * `inbox`. Aí o registro da inbox é o primeiro comando de cada transação,
+ * antes do lock da wallet, e é commitado junto com o efeito. A checagem
+ * rápida é pulada (só lê e não poderia gravar a inbox). Mensagem já
+ * processada → `DuplicateMessage`; mesmo `messageId` com outro conteúdo →
+ * `InboxConflictError`.
+ *
  * Nunca publica: eventos viram linhas da outbox (D9).
  */
 export class SubmitWagerTransactionUseCase {
@@ -66,33 +96,48 @@ export class SubmitWagerTransactionUseCase {
     private readonly metrics: SubmissionMetrics,
   ) {}
 
+  execute(command: SubmitWagerTransactionCommand, meta: OperationMeta): Promise<SubmissionResult>;
+  execute(
+    command: SubmitWagerTransactionCommand,
+    meta: OperationMeta,
+    inbox: InboxMessage,
+  ): Promise<SubmissionResult | DuplicateMessage>;
   async execute(
     command: SubmitWagerTransactionCommand,
     meta: OperationMeta,
-  ): Promise<SubmissionResult> {
+    inbox?: InboxMessage,
+  ): Promise<SubmissionResult | DuplicateMessage> {
     const hash = payloadHash(command);
     // Valida antes de tocar o banco: inválido nunca é gravado (D5). Esta
     // cópia é descartada, então o horário não importa.
     this.build(command, hash, VALIDATION_ONLY);
+    const entry: InboxEntry | undefined = inbox && {
+      consumerName: inbox.consumerName,
+      messageId: inbox.messageId,
+      hash: inboxHash(hash, inbox.type),
+    };
 
-    const known = await this.uow.run((tx) =>
-      tx.transactions.findByProviderAndKey(command.providerId, command.idempotencyKey),
-    );
-    if (known) {
-      this.metrics.countDuplicate("fast_path");
-      return replayOf(known, hash);
+    if (!entry) {
+      const known = await this.uow.run((tx) =>
+        tx.transactions.findByProviderAndKey(command.providerId, command.idempotencyKey),
+      );
+      if (known) {
+        this.metrics.countDuplicate("fast_path");
+        return replayOf(known, hash);
+      }
     }
 
     try {
-      return await this.process(command, hash, meta, "lock");
+      return await this.process(command, hash, meta, entry, "lock");
     } catch (error) {
       if (!(error instanceof DuplicateTransactionError)) throw error;
       this.metrics.countDuplicate("unique_index");
     }
-    // A transação foi desfeita inteira; a nova tentativa enxerga a vencedora.
-    // A duplicata já foi contada pelo índice, então a repetição não conta.
+    // A transação foi desfeita inteira (inclusive a inbox); a nova tentativa
+    // enxerga a vencedora. A duplicata já foi contada pelo índice, então a
+    // repetição não conta.
     try {
-      return await this.process(command, hash, meta, undefined);
+      return await this.process(command, hash, meta, entry, undefined);
     } catch (error) {
       if (!(error instanceof DuplicateTransactionError)) throw error;
       this.metrics.countDuplicate("unique_index");
@@ -106,10 +151,19 @@ export class SubmitWagerTransactionUseCase {
     command: SubmitWagerTransactionCommand,
     hash: string,
     meta: OperationMeta,
+    inbox: InboxEntry | undefined,
     countAs: "lock" | undefined,
-  ): Promise<SubmissionResult> {
+  ): Promise<SubmissionResult | DuplicateMessage> {
     return this.uow.run(async (tx) => {
-      // Ordem de locks: wallet, depois linhas da mesma wallet (CLAUDE.md, D7.2).
+      // Ordem de locks: chave da inbox, wallet, linhas da mesma wallet (CLAUDE.md, D7.2).
+      if (inbox) {
+        const registration = await tx.inbox.register(inbox);
+        if (registration === "conflict") throw new InboxConflictError();
+        if (registration === "duplicate") {
+          this.metrics.countDuplicate("inbox");
+          return DUPLICATE_MESSAGE;
+        }
+      }
       const wallet = await tx.wallets.lockById(command.walletId);
       if (!wallet) throw new WalletNotFoundError();
 

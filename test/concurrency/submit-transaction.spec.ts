@@ -55,15 +55,18 @@ async function ledgerOf(walletId: string) {
   });
 }
 
+/** As camadas do HTTP; a `inbox` é só da fila (D19.4). */
+type HttpDuplicateLayer = Exclude<DuplicateLayer, "inbox">;
+
 /** `wagering_duplicates_total` por camada (D11.2, D17.7); o API roda neste processo. */
-async function duplicates(): Promise<Record<DuplicateLayer, number>> {
+async function duplicates(): Promise<Record<HttpDuplicateLayer, number>> {
   const { values } = await wageringDuplicatesTotal.get();
-  const of = (layer: DuplicateLayer) =>
+  const of = (layer: HttpDuplicateLayer) =>
     values.find((value) => value.labels.layer === layer)?.value ?? 0;
   return { fast_path: of("fast_path"), lock: of("lock"), unique_index: of("unique_index") };
 }
 
-async function duplicatesDuring(work: () => Promise<void>): Promise<Record<DuplicateLayer, number>> {
+async function duplicatesDuring(work: () => Promise<void>): Promise<Record<HttpDuplicateLayer, number>> {
   const before = await duplicates();
   await work();
   const after = await duplicates();
@@ -226,7 +229,7 @@ describe("S4 R-13-C1..C3 D3.6 D7.2: submissão concorrente", () => {
 
     // A rival grava a mesma key na wallet B e segura o commit.
     const rival = await connect("app");
-    let counted: Record<DuplicateLayer, number> | undefined;
+    let counted: Record<HttpDuplicateLayer, number> | undefined;
     try {
       await rival.query("BEGIN");
       const rivalRow = transactionRow(

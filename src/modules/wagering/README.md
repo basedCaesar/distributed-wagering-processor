@@ -1,6 +1,6 @@
 # wagering — domínio
 
-TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). A persistência (schema, garantias no banco, ORM) está em [`infra/persistence/README.md`](infra/persistence/README.md); os use cases, em [`application/README.md`](application/README.md); a API HTTP, em [`infra/http/README.md`](infra/http/README.md); o worker de pendentes, em [`infra/workers/README.md`](infra/workers/README.md).
+TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). A persistência (schema, garantias no banco, ORM) está em [`infra/persistence/README.md`](infra/persistence/README.md); os use cases, em [`application/README.md`](application/README.md); a API HTTP, em [`infra/http/README.md`](infra/http/README.md); o worker de pendentes, em [`infra/workers/README.md`](infra/workers/README.md); o consumidor SQS, em [`infra/messaging/README.md`](infra/messaging/README.md).
 
 ## Peças
 

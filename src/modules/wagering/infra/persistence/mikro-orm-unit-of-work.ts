@@ -20,6 +20,8 @@ import {
 } from "../../application/errors";
 import type {
   IsolationLevel as AppIsolationLevel,
+  InboxEntry,
+  InboxRepository,
   LedgerRepository,
   OutboxWriter,
   PendingControl,
@@ -70,6 +72,20 @@ const NUDGE_DEPENDENTS_SQL = `
       WHERE wallet_id = ? AND provider_id = ? AND reference_external_transaction_id = ?
         AND status = 'PENDING_REFERENCE'
       FOR UPDATE SKIP LOCKED)`;
+
+/**
+ * Inbox (D3.7, D19.4): a linha nasce já processada, porque só fica gravada
+ * se a transação do efeito commitar. Uma duplicata simultânea espera no
+ * índice único até a primeira terminar; aí cai no `DO NOTHING`.
+ */
+const INBOX_INSERT_SQL = `
+  INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+  VALUES (?, ?, ?, now(), now())
+  ON CONFLICT (consumer_name, message_id) DO NOTHING
+  RETURNING message_id`;
+
+const INBOX_HASH_SQL = `
+  SELECT payload_hash FROM inbox_messages WHERE consumer_name = ? AND message_id = ?`;
 
 /** O `now()` da transação (D18.12), truncado em milissegundos. */
 const NOW_SQL = `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS now`;
@@ -138,6 +154,23 @@ function scopeFor(em: EntityManager): TransactionScope {
     ledger: ledgerRepository(em),
     outbox: outboxWriter(em),
     reconciliationRuns: reconciliationRunRepository(em),
+    inbox: inboxRepository(em),
+  };
+}
+
+function inboxRepository(em: EntityManager): InboxRepository {
+  return {
+    async register(entry: InboxEntry) {
+      const params = [entry.consumerName, entry.messageId];
+      const inserted = await em.execute<{ message_id: string }[]>(INBOX_INSERT_SQL, [
+        ...params,
+        entry.hash,
+      ]);
+      if (inserted.length > 0) return "new";
+      const [existing] = await em.execute<{ payload_hash: string }[]>(INBOX_HASH_SQL, params);
+      if (!existing) throw new Error("linha da inbox sumiu depois do conflito");
+      return existing.payload_hash === entry.hash ? "duplicate" : "conflict";
+    },
   };
 }
 

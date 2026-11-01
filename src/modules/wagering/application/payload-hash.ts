@@ -49,3 +49,14 @@ export function payloadHash(fields: PayloadHashFields): string {
   };
   return createHash("sha256").update(canonicalJson(subset)).digest("hex");
 }
+
+/**
+ * Hash da inbox (D3.8) = SHA-256 (hex) do JSON canônico de `payloadHash` e
+ * `type`. Fora `occurredAt`, a key e o `messageId`: um reenvio do produtor
+ * com outro `occurredAt` é a mesma mensagem.
+ */
+export function inboxHash(payloadHashHex: string, type: string): string {
+  return createHash("sha256")
+    .update(canonicalJson({ payloadHash: payloadHashHex, type }))
+    .digest("hex");
+}

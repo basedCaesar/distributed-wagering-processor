@@ -6,18 +6,18 @@ Use cases e portas. Não importa MikroORM, AWS SDK, pino nem `infra/` (o lint ga
 
 | Arquivo | O que é | Regras |
 |---|---|---|
-| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela e o `now()` dela), repositórios (inclusive `lockById` da wallet, as buscas de transação e, para o worker, `lockPending`, `resolve`, `reschedule` e `nudgeDependents`), `PendingQueue` (claim com dono), `OutboxWriter`, `IdGenerator`, `ReconciliationMetrics`, `ReconciliationLog`, `SubmissionMetrics` (duplicatas por camada). Não há porta de relógio: todo horário gravado vem do `TransactionScope.now()` (D18.12). | CLAUDE.md, D4.3, D4.4, D6.6, D7.2, D9, D16.6, D17.7, D18 |
+| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela e o `now()` dela), repositórios (inclusive `lockById` da wallet, as buscas de transação e, para o worker, `lockPending`, `resolve`, `reschedule` e `nudgeDependents`), `PendingQueue` (claim com dono), `OutboxWriter`, `InboxRepository` (registro da inbox na transação do use case), `IdGenerator`, `ReconciliationMetrics`, `ReconciliationLog`, `SubmissionMetrics` (duplicatas por camada, inclusive `inbox`). Não há porta de relógio: todo horário gravado vem do `TransactionScope.now()` (D18.12). | CLAUDE.md, D3.7, D4.3, D4.4, D6.6, D7.2, D9, D16.6, D17.7, D18, D19.4 |
 | `open-wallet.use-case.ts` | Abre a wallet: wallet, `OPENING`, lançamento e eventos numa transação só. | R-09-02..05 · D6.2, D6.3, D9.4 |
-| `submit-wager-transaction.use-case.ts` | Submissão de transação: o mesmo use case para HTTP e fila (R-10-03). Lock da wallet, idempotência autoritativa, regras do domínio, `balance_after`, outbox, cutucada das pendentes que esperam uma transação que ficou terminal. | R-07-*, R-08-*, R-09-10..17 · D1, D3, D4.1, D4.4, D7.2, D17 |
+| `submit-wager-transaction.use-case.ts` | Submissão de transação: o mesmo use case para HTTP e fila (R-10-03). Com a fila, a inbox entra antes do lock da wallet. Lock da wallet, idempotência autoritativa, regras do domínio, `balance_after`, outbox, cutucada das pendentes que esperam uma transação que ficou terminal. | R-07-*, R-08-*, R-09-10..17, R-10-03, R-10-04 · D1, D3, D4.1, D4.4, D7.2, D17, D19.4 |
 | `resolve-pending-transaction.use-case.ts` | Uma tentativa do worker sobre uma `PENDING_REFERENCE` (`attempt`) e o registro de um erro dela (`recordError`). | R-07-13, R-07-20..22 · D4, D18 |
 | `pending-policy.ts` | Valores da D4.3/D18.2 e funções puras: backoff preso ao prazo, prazo esgotado, limite de erros. | D4.2, D4.3, D18.1, D18.2, D18.5 |
 | `transaction-events.ts` | `eventsForTransition`: os eventos de uma transação que acabou de mudar de estado, o mesmo na submissão e no worker. | D4.6, D9.4 |
-| `payload-hash.ts` | `canonicalJson` e `payloadHash` (algoritmo abaixo). | R-09-14 · D3.3 |
+| `payload-hash.ts` | `canonicalJson`, `payloadHash` e `inboxHash` (algoritmo abaixo). | R-09-14 · D3.3, D3.8 |
 | `transaction-queries.ts` | `GET` de transação por id e por `(providerId, externalTransactionId)`, com o escopo do provedor. | R-09-08, R-09-09 · D6.1, D10.2 |
 | `wallet-queries.ts` | `GET` da wallet e página do ledger. | R-09-06, R-09-07 · D6.8 |
 | `reconcile-wallet.use-case.ts` | Reconciliação em `REPEATABLE READ`, sem lock; grava a execução; divergência → log + métrica. | R-09-18, R-09-19 · D6.9, D16.5, D16.6 |
 | `ledger-cursor.ts` | Cursor opaco = base64url da última `walletVersion`. | D6.8 |
-| `errors.ts` | `WalletAlreadyExistsError` (409 com `walletId`), `IdempotencyKeyConflictError` e `ExternalIdConflictError` (409 com `transactionId`), `InvalidSubmissionError` e `InvalidCursorError` (400), `WalletNotFoundError` e `TransactionNotFoundError` (404), `ConcurrentSubmissionError` (503, a repetição bateu de novo no índice), `DuplicateTransactionError` (barreira do índice, interna). | D3.6, D5, D6.3, D16.2, D17.2, D17.6 |
+| `errors.ts` | `WalletAlreadyExistsError` (409 com `walletId`), `IdempotencyKeyConflictError` e `ExternalIdConflictError` (409 com `transactionId`), `InvalidSubmissionError` e `InvalidCursorError` (400), `WalletNotFoundError` e `TransactionNotFoundError` (404), `ConcurrentSubmissionError` (503, a repetição bateu de novo no índice), `DuplicateTransactionError` (barreira do índice, interna), `InboxConflictError` (mesmo `messageId` com outro conteúdo; na fila, DLQ). | D3.6, D3.8, D5, D6.3, D16.2, D17.2, D17.6, D19.4 |
 
 ## Submeter uma transação
 
@@ -74,6 +74,16 @@ sequenceDiagram
     C-->>P: 200 PROCESSED · 202 PENDING_REFERENCE · 422 REJECTED
 ```
 
+## Pela fila (R-10-03, R-10-04, D19.4)
+
+O consumidor ([`infra/messaging/README.md`](../infra/messaging/README.md)) chama o mesmo `execute`, com um terceiro argumento: `{ consumerName, messageId, type }`. Muda só isto:
+- a checagem rápida (passo 2) é pulada: ela só lê e não poderia gravar a inbox;
+- o **primeiro comando** de cada transação SQL é `inbox.register` (`INSERT … ON CONFLICT DO NOTHING`, `processed_at = now()`), antes do `FOR UPDATE` da wallet (ordem de locks: inbox, wallet, linhas da wallet). A linha só fica se o efeito commitar;
+- `duplicate` (mesmo `messageId`, mesmo hash) → `{ duplicateMessage: true }`, sem tocar na wallet, contada em `layer="inbox"`; `conflict` (outro hash) → `InboxConflictError` (D3.8);
+- se a barreira do `UNIQUE` (passo 4) desfizer a transação, a inbox é desfeita junto, e a repetição a registra de novo.
+
+Hash da inbox (D3.8): SHA-256 do JSON canônico de `{ payloadHash, type }`. Ficam de fora o `occurredAt`, a key e o `messageId`: um reenvio do produtor com outro `occurredAt` é a mesma mensagem. Um `messageId` diferente com a mesma key passa pela inbox e cai no replay da key.
+
 ## Resolver uma pendente (R-07-13, R-07-20..22, D4, D18)
 
 O worker ([`infra/workers/README.md`](../infra/workers/README.md)) pega um lote no claim e chama `attempt` para cada item, em ordem (D18.9). Cada tentativa é uma transação SQL:
@@ -117,6 +127,8 @@ O cálculo é puro, no domínio (`domain/wallet-reconciliation.ts`): Σ crédito
 | `test/unit/application/ledger-cursor.spec.ts` | ida e volta do cursor; cursores inválidos |
 | `test/unit/application/payload-hash.spec.ts` | vetor fixo do §9; chaves ordenadas em todos os níveis; ordem dos campos não importa (propriedade); `"25"` = `"25.00"`; cada campo de negócio muda o hash; key e metadados não |
 | `test/unit/application/submit-wager-transaction.spec.ts` | barreira do `UNIQUE` com `UnitOfWork` em memória: a repetição vê a vencedora → replay, `unique_index` contado uma vez; bate de novo → `ConcurrentSubmissionError` (transitório, D17.6), sem 3ª tentativa; replay rápido conta `fast_path`; `createdAt`, `processedAt` e eventos com o `now()` do scope (D18.12) |
+| `test/unit/application/submit-inbox.spec.ts` | com a inbox: registro antes do lock da wallet, sem checagem rápida; hash da inbox (muda com o `type`, não com a key); duplicata sem lock, contada em `inbox`; conflito → `InboxConflictError`; sem inbox, o caminho do HTTP |
+| `test/integration/messaging/*.spec.ts`, `test/concurrency/consumer.spec.ts` | o use case pela fila real (ver o README do consumidor) |
 | `test/unit/application/pending-policy.spec.ts` | valores da D4.3/D18.2; backoff 1, 2, 4 … 60 s; preso ao prazo; prazo de 15 min; 5º erro |
 | `test/unit/application/resolve-pending-transaction.spec.ts` | ordem dos locks; reagendar, aplicar, expirar, expirar depois de avaliar (D18.5), `skipped` (linha resolvida, lease de outro worker ou já solto, D18.10); horários do `now()` do scope (D18.12); wallet inexistente → `FAILED` na 1ª vez (D18.13); `recordError` transitório, não transitório, 5º erro → `FAILED`, lease de outro worker; erro antes do prazo preso a ele, erro depois do prazo com backoff normal, e a tentativa seguinte expira (D18.11) |
 | `test/integration/wagering/pending-worker.spec.ts` | worker real sobre Postgres: backoff e lease; prazo → `REFERENCE_NOT_FOUND` com evento (causação UUIDv7 ≠ correlação, D18.3) e replay `422`; referência que chega depois do prazo; referência ainda pendente no prazo; cutucada (mesma wallet só, `BET` `REJECTED` também, cadeia `REFUND ← ROLLBACK`, com uma causação por tentativa); 5 erros → `FAILED` e replay `500`; erros zerados; transitório não conta; replay `200` depois da resolução, com o `correlationId` original |
