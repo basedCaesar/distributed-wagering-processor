@@ -395,6 +395,40 @@ describe("S2 R-05-09 D7.3: garantias da tabela wager_transactions (papel da app)
     });
   });
 
+  describe("moeda da transação PROCESSED (D15.10)", () => {
+    it("R-06-26 D15.10: LOSS PROCESSED em USD numa wallet BRL → FK", async () => {
+      await expectDbError(
+        insert({ kind: "LOSS", amount: "5.00", currency: "USD" }),
+        {
+          code: "23503",
+          constraint: "wager_transactions_processed_currency_fk",
+        },
+      );
+    });
+
+    it("D15.10 D5: LOSS REJECTED com CURRENCY_MISMATCH em USD numa wallet BRL é aceito", async () => {
+      const id = newId();
+      await insert({
+        id,
+        kind: "LOSS",
+        amount: "5.00",
+        currency: "USD",
+        ...rejected,
+        failure_code: "CURRENCY_MISMATCH",
+      });
+
+      const { rows } = await app.query(
+        "SELECT status, currency, processed_currency FROM wager_transactions WHERE id = $1",
+        [id],
+      );
+      expect(rows[0]).toEqual({
+        status: "REJECTED",
+        currency: "USD",
+        processed_currency: null,
+      });
+    });
+  });
+
   describe("imutabilidade e transições (D7.3, D4.5, D15.5)", () => {
     it("D4.2 D15.5: INSERT de FAILED → recusado (FAILED só nasce de PENDING_REFERENCE)", async () => {
       await expectDbError(

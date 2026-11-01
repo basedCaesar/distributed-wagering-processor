@@ -1,6 +1,6 @@
 # shared/health
 
-Liveness e readiness (D11.3, R-12-04). Abertos, sem autenticação (D10.2).
+Liveness e readiness (D11.3, R-12-04). Abertos, sem autenticação (D10.2): o controller é `@Public()`, então o guard global não o alcança. Documentados no Swagger (D13.2).
 
 | Rota | Responde |
 |---|---|
@@ -17,4 +17,4 @@ Liveness e readiness (D11.3, R-12-04). Abertos, sem autenticação (D10.2).
 
 ## Testes
 
-`test/integration/health.spec.ts`: readiness falsa com porta sem serviço e com host não roteável.
+`test/integration/health.spec.ts`: readiness falsa com porta sem serviço e com host não roteável. Sem token, com o guard ligado: `test/integration/auth/auth.spec.ts`.

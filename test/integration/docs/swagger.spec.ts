@@ -1,0 +1,62 @@
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { startTestApi, type TestApi } from "../../support/api";
+
+interface OpenApiOperation {
+  responses: Record<string, unknown>;
+  security?: Record<string, unknown>[];
+}
+
+interface OpenApiDocument {
+  paths: Record<string, Record<string, OpenApiOperation>>;
+  components: { securitySchemes?: Record<string, { type: string; scheme?: string }> };
+}
+
+let api: TestApi;
+let doc: OpenApiDocument;
+
+beforeAll(async () => {
+  api = await startTestApi();
+  const response = await fetch(`${api.baseUrl}/docs-json`);
+  doc = (await response.json()) as OpenApiDocument;
+});
+
+afterAll(async () => {
+  await api.close();
+});
+
+function statusesOf(path: string, method: string): string[] {
+  const operation = doc.paths[path]?.[method];
+  if (!operation) throw new Error(`${method.toUpperCase()} ${path} não está no Swagger`);
+  return Object.keys(operation.responses).sort();
+}
+
+describe("S3 D13.2: Swagger em /docs", () => {
+  it("D13.2 D10: esquema Bearer declarado", () => {
+    const schemes = Object.values(doc.components.securitySchemes ?? {});
+    expect(schemes).toContainEqual(
+      expect.objectContaining({ type: "http", scheme: "bearer" }),
+    );
+  });
+
+  it.each([
+    ["/wallets", "post", ["201", "400", "401", "403", "409", "503"]],
+    ["/wallets/{walletId}", "get", ["200", "400", "401", "404", "503"]],
+    ["/wallets/{walletId}/ledger", "get", ["200", "400", "401", "404", "503"]],
+    [
+      "/wallets/{walletId}/reconciliation",
+      "post",
+      ["200", "400", "401", "403", "404", "503"],
+    ],
+  ])("D13.2 D5: %s %s documenta os status da D5 e exige Bearer", (path, method, statuses) => {
+    expect(statusesOf(path, method)).toEqual([...statuses].sort());
+    expect(doc.paths[path]?.[method]?.security?.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["/health/live", "get", ["200"]],
+    ["/health/ready", "get", ["200", "503"]],
+  ])("D13.2 R-02-06: %s documentado, sem segurança", (path, method, statuses) => {
+    expect(statusesOf(path, method)).toEqual(statuses);
+    expect(doc.paths[path]?.[method]?.security ?? []).toEqual([]);
+  });
+});

@@ -271,6 +271,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - `ARCHITECTURE.md` com tudo o que a D11.5 lista, mais as interpretações (D1.6) e as limitações;
 - `scripts/acceptance.sh` completo.
 
+**Contratos da S3:** o `AUTH_ISSUER` do Compose (hoje `http://keycloak:8080/realms/wagering`) precisa bater com o emissor (`iss`) que vem no token do Keycloak, que depende do host usado para pedir o token; senão toda requisição dá `401` (D10.1, D16.1). O `prom-client` aparece como deprecated no install (substituído por `@prometheus-io/client`): avaliar na S9, junto com o `/metrics` (D11.2, D16.6).
+
 **Cobre:** R-02-03, R-14-02, R-04-10, R-08-07 · D10, D11.5
 
 **Aceite:**

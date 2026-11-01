@@ -1,6 +1,6 @@
 # wagering — domínio
 
-TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). A persistência (schema, garantias no banco, ORM) está em [`infra/persistence/README.md`](infra/persistence/README.md). Use cases e HTTP chegam nas fatias seguintes (`application/`, `infra/`).
+TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada kind e eventos de integração. Não importa framework, ORM, AWS, logger nem `zod` (o lint garante). A persistência (schema, garantias no banco, ORM) está em [`infra/persistence/README.md`](infra/persistence/README.md); os use cases, em [`application/README.md`](application/README.md); a API HTTP, em [`infra/http/README.md`](infra/http/README.md).
 
 ## Peças
 
@@ -11,6 +11,7 @@ TypeScript puro: dinheiro, wallet, ledger, transação de aposta, regras de cada
 | `wallet-ledger-entry.ts`     | Lançamento congelado na construção. `create` valida aritmética, sinal, moeda e `walletVersion`.                                                                                                                                            | R-06-40..43                                        |
 | `wager-transaction.ts`       | Agregado da transação: `create` (submissão; valida o que só depende do payload), `opening` (sem campos do provedor), transições, consultas.                                                                                                | R-06-30..39 · D1.5, D2.3, D4.5, D6.1, D14.5, D14.6 |
 | `wager-transaction-rules.ts` | Serviço de domínio: `applyWagerTransaction` decide e aplica uma transação sobre a wallet travada; `openWallet` abre wallet + `OPENING`.                                                                                                    | R-07-* · D1, D5, D14.2, D14.3, D14.9               |
+| `wallet-reconciliation.ts`   | `reconcileWallet`: Σ créditos − Σ débitos, encadeamento e cauda; devolve `consistent` e `issues` (`BALANCE_MISMATCH`, `CHAIN_BREAK`, `TAIL_MISMATCH`). Não corrige nada.                                                                    | R-09-18, R-09-19 · D6.9, D16.5                     |
 | `failure-code.ts`            | `FailureCode` e `ReferenceScopeField`.                                                                                                                                                                                                     | D5, D14.1, D14.3                                   |
 | `domain-error.ts`            | Erros lançados: payload inválido (vira `400`) ou erro de programação. Violação de regra de negócio **não** lança: vira `REJECTED`.                                                                                                         | D5                                                 |
 | `events/`                    | `IntegrationEvent` abstrato e uma subclasse por evento, com `eventType` e `version` no tipo. `data` só com `MoneyProps`.                                                                                                                   | R-11-08..12 · D9.3, D9.4, D14.4                    |
@@ -64,6 +65,7 @@ Interpretações documentadas (R-07-15):
 | `wager-transaction-rules.spec.ts` | cada kind (R-13-U3), todos os casos da D1, escopo, conflito de moeda (R-13-U4), ordem da D14.2; propriedade com sequências aleatórias |
 | `events.spec.ts`                  | envelope, `data` de cada evento, `aggregateId`                                                                                        |
 | `failure-code.spec.ts`            | lista estável de códigos                                                                                                              |
+| `wallet-reconciliation.spec.ts`   | cada divergência da D16.5, diferença com sinal, wallet sem lançamentos, não corrige                                                   |
 | `../lint-domain-purity.spec.ts`   | domínio sem framework, sem `Number(`, `parseFloat`, `parseInt`, `Math.` e `toFixed` (D14.8)                                           |
 
 `test/support/in-memory-book.ts` faz em memória o papel do repositório (busca da referência e `alreadyReversed`), para os testes de regra.

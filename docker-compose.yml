@@ -74,5 +74,9 @@ services:
       QUEUE_WAGER_TRANSACTIONS: wager-transactions.fifo
       QUEUE_WAGER_TRANSACTIONS_DLQ: wager-transactions-dlq.fifo
       QUEUE_WAGERING_EVENTS_AUDITOR: wagering-events-auditor.fifo
+      # D10.1: o container do Keycloak entra na S10 (D10.4).
+      AUTH_ISSUER: http://keycloak:8080/realms/wagering
+      AUTH_AUDIENCE: wagering-api
+      AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
     ports:
       - "3000:3000"

@@ -86,6 +86,12 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 |---|---|
 | Domínio (dinheiro, wallet, ledger, transação, eventos) | [`src/modules/wagering/README.md`](src/modules/wagering/README.md) |
 | Persistência (schema, garantias no banco, ORM, migrations) | [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md) |
+| Use cases (abrir wallet, consultas, reconciliação) | [`src/modules/wagering/application/README.md`](src/modules/wagering/application/README.md) |
+| API HTTP das wallets (endpoints, permissões, cursor) — Swagger em `/docs` | [`src/modules/wagering/infra/http/README.md`](src/modules/wagering/infra/http/README.md) |
+| Autenticação (JWT, papéis, guard) | [`src/shared/auth/README.md`](src/shared/auth/README.md) |
+| Erros → HTTP (`classifyError`) | [`src/shared/errors/README.md`](src/shared/errors/README.md) |
+| HTTP comum (correlação, validação, Swagger) | [`src/shared/http/README.md`](src/shared/http/README.md) |
+| Métricas | [`src/shared/metrics/README.md`](src/shared/metrics/README.md) |
 | Configuração | [`src/shared/config/README.md`](src/shared/config/README.md) |
 | Segredos | [`src/shared/secrets/README.md`](src/shared/secrets/README.md) |
 | Logs | [`src/shared/logger/README.md`](src/shared/logger/README.md) |

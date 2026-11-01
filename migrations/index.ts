@@ -6,6 +6,7 @@ import { Migration20261030000004_wallet_ledger_tail } from "./Migration202610300
 import { Migration20261030000005_messaging } from "./Migration20261030000005_messaging";
 import { Migration20261030000006_reconciliation_runs } from "./Migration20261030000006_reconciliation_runs";
 import { Migration20261030000007_ledger_transaction_coherence } from "./Migration20261030000007_ledger_transaction_coherence";
+import { Migration20261031000008_processed_currency } from "./Migration20261031000008_processed_currency";
 
 /** Ordem de aplicação. Migration aplicada nunca é editada: crie outra. */
 export const MIGRATIONS: MigrationObject[] = [
@@ -16,4 +17,5 @@ export const MIGRATIONS: MigrationObject[] = [
   Migration20261030000005_messaging,
   Migration20261030000006_reconciliation_runs,
   Migration20261030000007_ledger_transaction_coherence,
+  Migration20261031000008_processed_currency,
 ].map((migration) => ({ name: migration.name, class: migration }));

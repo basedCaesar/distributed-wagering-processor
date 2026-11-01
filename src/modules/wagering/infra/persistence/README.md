@@ -9,9 +9,12 @@ Schema do Postgres (migrations em [`migrations/`](../../../../../migrations)) e 
 | `*.schema.ts`                           | Um `EntitySchema` por tabela, sobre um **record** plano (`WalletRecord`, `WagerTransactionRecord`, `WalletLedgerEntryRecord`). O domínio não conhece o ORM. | D7.1              |
 | `*.mapper.ts`                           | Domínio ↔ record. Leitura sempre por `rehydrate` (R-06-03). `undefined` vira `null`. `PENDING` não vira record (D4.1).                                      | D4.1, D6.1, D14.5 |
 | `index.ts`                              | `WAGERING_ENTITIES`, a lista registrada no ORM.                                                                                                             |                   |
+| `outbox-message.schema.ts`, `reconciliation-run.schema.ts` | Linhas que o use case grava na outbox (sem `position`, que é identity, e sem as colunas do publisher) e nas execuções de reconciliação. | D6.9, D9.2, D9.3 |
+| `mikro-orm-unit-of-work.ts`             | `UnitOfWork` da `application/`: `em.transactional()` num `EntityManager` novo por chamada, com os repositórios presos a ele. O `insert` da wallet faz flush na hora e traduz o `wallets_player_currency_uq` em `DuplicateWalletError`. | D3, D6.3, D7.1 |
 | `src/shared/orm/decimal-amount.type.ts` | Tipo customizado: `numeric(20,2)` ↔ string; um `number` em qualquer direção lança erro.                                                                     | D2.4, D7.1        |
 | `src/shared/orm/fk-id.ts`               | FK mapeada como id (string), declarada `m:1` só para o flush inserir wallet → transação → lançamento nessa ordem.                                           |                   |
 | `src/shared/orm/create-orm.ts`          | `MikroORM.init` com `lock_timeout` 2 s e `statement_timeout` 5 s em toda conexão.                                                                           | D5                |
+| `src/shared/orm/orm.module.ts`          | `ormModule(entities)`: uma instância do `MikroORM` por processo, com as credenciais do `SecretsProvider`; fecha no shutdown.                                | D12.3             |
 
 Nenhum schema usa `version: true`: a `version` da wallet sobe só em `Wallet.debit`/`credit` (D7.2). A segunda camada é do banco: `UNIQUE (wallet_id, wallet_version)` + trigger de cauda (D15.7).
 
@@ -53,6 +56,7 @@ erDiagram
         varchar failure_detail
         numeric balance_after "moeda da wallet"
         char3 balance_after_currency "D15.8"
+        char3 processed_currency "gerada; FK à wallet (D15.10)"
         int attempts "controle do worker"
         timestamptz next_attempt_at "controle do worker"
         text correlation_id "D9.5; imutável após o INSERT"
@@ -125,6 +129,7 @@ Todos com o papel da app, menos os marcados "dono": com a app, o privilégio rec
 | Encadeamento, sem furo; primeiro lançamento de 0; `OPENING` só como primeiro (D15.6)                                   | trigger `wallet_ledger_entries_chain`                                                                                                 | `ledger.spec.ts`                                             |
 | Saldo e versão = último lançamento no commit (D15.1)             | constraint triggers diferidos `wallets_ledger_tail`                                                                                   | `ledger.spec.ts`, `wallets.spec.ts`                          |
 | Saldo observado na moeda da wallet (D15.8) | FK `wager_transactions_balance_currency_fk`, `…_balance_after_pair_ck` | `wager-transactions.spec.ts` |
+| Transação `PROCESSED` (inclusive `LOSS`) na moeda da wallet; `REJECTED` por `CURRENCY_MISMATCH` aceita (D15.10) | coluna gerada `processed_currency` + FK `wager_transactions_processed_currency_fk` | `wager-transactions.spec.ts` |
 | Um lançamento por transação; moeda e transação coerentes (D15.4) | `…_transaction_uq`, `…_wallet_currency_fk`, `…_transaction_fk`                                                                        | `ledger.spec.ts`                                             |
 | Dois escritores sem lock → um recusado (D15.7)                   | `wallet_ledger_entries_wallet_version_uq`                                                                                             | `ledger.spec.ts` (corrida real, sincronizada por `pg_locks`) |
 | Inbox por `(consumer_name, message_id)` (D3.7)                   | `inbox_messages_pk`                                                                                                                   | `messaging-and-reconciliation.spec.ts`                       |

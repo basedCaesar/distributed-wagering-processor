@@ -7,6 +7,7 @@ import {
   debitBet,
   insertRow,
   type Row,
+  rejected,
   type SeededWallet,
   seedWallet,
   subtractCents,
@@ -374,7 +375,12 @@ describe("S2 R-05-05 R-05-09 D7.3: garantias do ledger", () => {
 
       await expectInTransaction(
         async () => {
-          const tx = transactionRow(wallet, { currency: "USD" });
+          // REJECTED: uma PROCESSED em USD numa wallet BRL nem é gravada (D15.10).
+          const tx = transactionRow(wallet, {
+            currency: "USD",
+            ...rejected,
+            failure_code: "CURRENCY_MISMATCH",
+          });
           await insertRow(app, "wager_transactions", tx);
           await insertRow(
             app,
