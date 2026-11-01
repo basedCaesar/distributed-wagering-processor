@@ -150,6 +150,8 @@ scripts/acceptance.sh        roda os exemplos do §9 e do §10 literalmente
 ## Regras de trabalho
 
 - **Planeje antes de codar.** Apresente o plano da fatia e espere aprovação.
+- **Edite arquivos só com as ferramentas de edição** (Edit/Write). Nunca com `sed -i`, `bun -e`, `node -e`, `python` ou heredoc: isso pede aprovação manual a cada vez e esconde a mudança do diff de revisão.
+- **Não comece comandos com `cd`**: você já está na raiz do projeto. Rode um comando por vez, sem encadear muitos com `&&`, `;` ou laços `for`, a não ser que seja necessário (por exemplo, as rodadas de 10×).
 - **Testes primeiro.** O nome do teste cita o requisito e/ou a decisão: `it("R-13-C1 D3.6: 50 BETs iguais em paralelo → 1 débito")`.
 - Testes de integração usam Postgres e LocalStack **reais**, com o papel da aplicação. Nunca mocke banco ou fila neles.
 - Concorrência:
