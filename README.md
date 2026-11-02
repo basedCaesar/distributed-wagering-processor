@@ -21,7 +21,7 @@ Portas usadas pelo Compose de dev: 3000 (api), 5432 (Postgres), 4566 (LocalStack
 git clone <url-do-repositório> distributed-wagering-processor
 cd distributed-wagering-processor
 bun install
-bun run infra:up          # constrói a imagem e sobe tudo (a 1ª vez demora alguns minutos)
+bun run infra:up          # (re)constrói a imagem e sobe tudo (a 1ª vez demora alguns minutos)
 bun run acceptance        # roda os exemplos do §9 e do §10 como estão escritos
 ```
 
@@ -37,7 +37,7 @@ Cada passo é conferido, e qualquer divergência faz o comando sair com erro. O 
 ```bash
 bun install
 
-bun run infra:up          # Compose completo (topologia da D7.4, abaixo), com Keycloak e seed
+bun run infra:up          # Compose completo (topologia da D7.4, abaixo), com Keycloak e seed; `--build`: sempre o código atual (D23.8)
 bun run infra:down
 bun run infra:test:up     # infraestrutura dos testes (portas separadas, com Keycloak de teste)
 bun run infra:test:down

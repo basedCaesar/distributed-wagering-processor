@@ -23,7 +23,7 @@ A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 ap
   - 1ª aceitação: tudo ok, com `idempotentReplay: false` e "o consumidor processou msg-123 (linha da inbox gravada)";
   - 2ª aceitação: tudo ok, com `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio";
   - seed de novo: "a wallet do exemplo já existe; nada a fazer", saída 0.
-- **Atenção:** o `infra:up` é `docker compose up -d`, sem `--build`. Com uma imagem `wagering-app:local` antiga na máquina, ele roda o código antigo. Na 1ª tentativa desta validação foi o que aconteceu, e o seed antigo falhou ao rodar de novo.
+- **Atenção:** na 1ª tentativa desta validação, o `infra:up` ainda era `docker compose up -d`, sem `--build`, e reaproveitou uma `wagering-app:local` antiga da máquina: o seed antigo falhou ao rodar de novo. Desde a D23.8, o `infra:up` usa `--build`.
 
 ## Regras (CLAUDE.md, D11.4)
 
