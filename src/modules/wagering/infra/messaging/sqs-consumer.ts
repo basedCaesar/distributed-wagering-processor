@@ -1,6 +1,14 @@
 import type { Logger } from "pino";
 import { type ClassifiedError, classifyError } from "../../../../shared/errors/classify-error";
 import { type RequestContext, runWithContext } from "../../../../shared/logger/request-context";
+import {
+  type DlqConsumer,
+  type DlqReason,
+  dlqReason,
+  type RetryComponent,
+  wageringDlqMessagesTotal,
+  wageringRetriesTotal,
+} from "../../../../shared/metrics/metrics";
 import type { MessageAttemptsRecorder } from "../persistence/message-attempts";
 import {
   attemptsExhausted,
@@ -70,6 +78,23 @@ export interface ParsedMessage {
 /** Corpo → mensagem validada. Lança o erro de validação (permanente, DLQ). */
 export type MessageParser = (body: string) => ParsedMessage;
 
+/** Labels deste consumidor nas métricas (D22.3, D22.4): enums fechados (D22.11). */
+export interface ConsumerMetricLabels {
+  component: RetryComponent;
+  consumer: DlqConsumer;
+}
+
+/** O que um erro leva ao log: categoria, código e a identificação do banco (D22.9 e), nunca o resto. */
+function errorFields(error: ClassifiedError): Record<string, string> {
+  return {
+    category: error.category,
+    code: error.code,
+    ...(error.db?.sqlState !== undefined && { sqlState: error.db.sqlState }),
+    ...(error.db?.constraint !== undefined && { constraint: error.db.constraint }),
+    ...(error.db?.table !== undefined && { table: error.db.table }),
+  };
+}
+
 export interface SqsConsumerDeps {
   queue: SqsWagerQueue;
   attempts: MessageAttemptsRecorder;
@@ -94,7 +119,9 @@ export interface SqsConsumerDeps {
  * andamento em até 20 s e devolve com visibilidade 0 as não iniciadas e as
  * que o último receive trouxer.
  *
- * Logs sem valores, saldos, payload nem `playerId` (D11.1).
+ * Logs sem valores, saldos, payload nem `playerId` (D11.1); um erro do
+ * banco leva só SQLSTATE, constraint e tabela (D22.9 e). Métricas: cada
+ * retry agendado (D22.3) e cada cópia para a DLQ, pelo motivo (D22.4).
  */
 export class SqsConsumer {
   protected readonly policy: ConsumerPolicy;
@@ -107,7 +134,8 @@ export class SqsConsumer {
   constructor(
     private readonly deps: SqsConsumerDeps,
     private readonly parse: MessageParser,
-    policy: Partial<ConsumerPolicy> = {},
+    policy: Partial<ConsumerPolicy>,
+    private readonly labels: ConsumerMetricLabels,
   ) {
     this.policy = { ...CONSUMER_POLICY, ...policy };
     this.wait = deps.wait ?? abortableDelay;
@@ -243,9 +271,10 @@ export class SqsConsumer {
     error: ClassifiedError,
   ): Promise<MessageOutcome> {
     const { category, code } = error;
+    const fields = errorFields(error);
     if (dispositionOf(category) === "dead_letter" || messageId === undefined) {
-      this.deps.logger.warn({ category, code, sqsMessageId: message.sqsMessageId }, "mensagem permanente → DLQ");
-      return this.deadLetter(message, messageId);
+      this.deps.logger.warn({ ...fields, sqsMessageId: message.sqsMessageId }, "mensagem permanente → DLQ");
+      return this.deadLetter(message, messageId, dlqReason(code));
     }
     let attempts: number;
     try {
@@ -255,24 +284,33 @@ export class SqsConsumer {
       // o limite fica com o redrive da fila (D19.3).
       const classified = classifyError(recordError);
       this.deps.logger.warn(
-        { category, code, recordCategory: classified.category, receiveCount: message.receiveCount },
+        { ...fields, recordCategory: classified.category, receiveCount: message.receiveCount },
         "tentativa não registrada; o redrive da fila é o limite",
       );
       return this.retry(message, backoffSeconds(message.receiveCount, this.policy.backoffMaxSeconds));
     }
     if (attemptsExhausted(attempts, this.policy.maxAttempts)) {
-      this.deps.logger.warn({ category, code, attempts }, "tentativas esgotadas → DLQ");
-      return this.deadLetter(message, messageId);
+      this.deps.logger.warn({ ...fields, attempts }, "tentativas esgotadas → DLQ");
+      return this.deadLetter(message, messageId, "ATTEMPTS_EXHAUSTED");
     }
-    this.deps.logger.warn({ category, code, attempts }, "falha transitória; retry com backoff");
+    this.deps.logger.warn({ ...fields, attempts }, "falha transitória; retry com backoff");
     return this.retry(message, backoffSeconds(attempts, this.policy.backoffMaxSeconds));
   }
 
-  private async deadLetter(message: QueueMessage, messageId: string | undefined): Promise<MessageOutcome> {
+  /**
+   * Cópia para a DLQ; conta pelo motivo quando o envio dá certo, inclusive
+   * se o delete falhar depois (D22.4). O redrive do SQS não passa por aqui.
+   */
+  private async deadLetter(
+    message: QueueMessage,
+    messageId: string | undefined,
+    reason: DlqReason,
+  ): Promise<MessageOutcome> {
     try {
       await this.deps.queue.deadLetter(message);
     } catch (error) {
       if (error instanceof DeadLetterDeleteError) {
+        this.countDeadLetter(reason);
         // As tentativas ficam: na volta, a 1ª falha transitória já esgota o
         // limite e a mensagem vai de novo para a DLQ (deduplicada).
         const { category, code } = classifyError(error.cause);
@@ -286,8 +324,13 @@ export class SqsConsumer {
       this.deps.logger.error({ category, code }, "cópia para a DLQ falhou; a mensagem continua na fila");
       return "unresolved";
     }
+    this.countDeadLetter(reason);
     if (messageId !== undefined) await this.clearAttempts(messageId);
     return "dead_lettered";
+  }
+
+  private countDeadLetter(reason: DlqReason): void {
+    wageringDlqMessagesTotal.inc({ consumer: this.labels.consumer, reason });
   }
 
   /**
@@ -303,7 +346,9 @@ export class SqsConsumer {
     }
   }
 
+  /** Nova tentativa depois de uma falha (D8.2): conta como retry do componente (D22.3). */
   private async retry(message: QueueMessage, seconds: number): Promise<MessageOutcome> {
+    wageringRetriesTotal.inc({ component: this.labels.component });
     try {
       await this.deps.queue.changeVisibility(message, seconds);
       return "retry_scheduled";

@@ -17,13 +17,17 @@ import {
   WalletNotFoundError,
 } from "./errors";
 import { inboxHash, payloadHash } from "./payload-hash";
-import type {
-  IdGenerator,
-  InboxEntry,
-  OperationMeta,
-  SubmissionMetrics,
-  UnitOfWork,
+import {
+  type IdGenerator,
+  type InboxEntry,
+  NO_TRANSACTION_METRICS,
+  type OperationMeta,
+  type SubmissionMetrics,
+  type TransactionChannel,
+  type TransactionMetrics,
+  type UnitOfWork,
 } from "./ports";
+import { settledReferenceOf } from "./refund-after-settlement";
 import { eventsForTransition } from "./transaction-events";
 
 /** Horário da cópia que só valida o payload, antes do banco (nunca é gravada). */
@@ -66,6 +70,15 @@ export interface DuplicateMessage {
 const DUPLICATE_MESSAGE: DuplicateMessage = { duplicateMessage: true };
 
 /**
+ * O que uma transação SQL da submissão decidiu. `settledReferenceId`: um
+ * `REFUND` aplicado a uma `BET` liquidada (D1.7, D22.8), contado só
+ * depois do commit.
+ */
+type Processed =
+  | { kind: "duplicate_message" }
+  | { kind: "result"; result: SubmissionResult; settledReferenceId?: string };
+
+/**
  * Submissão de uma transação do provedor (R-09-10..17, D3, D4.1, D7.2).
  *
  * 1. Valida o que é decidível só pelo payload (`400`, D5) e calcula o hash.
@@ -79,6 +92,9 @@ const DUPLICATE_MESSAGE: DuplicateMessage = { duplicateMessage: true };
  *    barrar de novo, `503` (D17.6).
  *
  * Cada duplicata de key é contada pela camada que a pegou (D11.2, D17.7).
+ * Depois do commit: o estado gravado por status, kind e canal (replay não
+ * conta, D22.2), a repetição da D3.6 (D22.3) e o `REFUND` de uma `BET` já
+ * liquidada (D1.7, D22.8), que não bloqueia.
  *
  * **Fila** (R-10-03, D19.4): o consumidor chama este mesmo use case com a
  * `inbox`. Aí o registro da inbox é o primeiro comando de cada transação,
@@ -94,6 +110,7 @@ export class SubmitWagerTransactionUseCase {
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
     private readonly metrics: SubmissionMetrics,
+    private readonly transactionMetrics: TransactionMetrics = NO_TRANSACTION_METRICS,
   ) {}
 
   execute(command: SubmitWagerTransactionCommand, meta: OperationMeta): Promise<SubmissionResult>;
@@ -127,23 +144,43 @@ export class SubmitWagerTransactionUseCase {
       }
     }
 
+    const channel: TransactionChannel = entry ? "sqs" : "http";
     try {
-      return await this.process(command, hash, meta, entry, "lock");
+      return this.report(await this.process(command, hash, meta, entry, "lock"), channel);
     } catch (error) {
       if (!(error instanceof DuplicateTransactionError)) throw error;
       this.metrics.countDuplicate("unique_index");
     }
     // A transação foi desfeita inteira (inclusive a inbox); a nova tentativa
     // enxerga a vencedora. A duplicata já foi contada pelo índice, então a
-    // repetição não conta.
+    // repetição não conta como duplicata; conta como retry (D22.3).
+    this.transactionMetrics.countSubmissionRetry();
     try {
-      return await this.process(command, hash, meta, entry, undefined);
+      return this.report(await this.process(command, hash, meta, entry, undefined), channel);
     } catch (error) {
       if (!(error instanceof DuplicateTransactionError)) throw error;
       this.metrics.countDuplicate("unique_index");
       // Bateu de novo: conflito transitório, o reenvio resolve (D17.6).
       throw new ConcurrentSubmissionError();
     }
+  }
+
+  /** Já commitado: conta o estado gravado e o `REFUND` de `BET` liquidada (D22.2, D22.8). */
+  private report(processed: Processed, channel: TransactionChannel): SubmissionResult | DuplicateMessage {
+    if (processed.kind === "duplicate_message") return DUPLICATE_MESSAGE;
+    const { result, settledReferenceId } = processed;
+    if (result.idempotentReplay) return result;
+    const { transaction } = result;
+    this.transactionMetrics.countDecision({ status: transaction.status, kind: transaction.kind, channel });
+    if (settledReferenceId !== undefined) {
+      this.transactionMetrics.refundAfterSettlement({
+        channel,
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        referenceTransactionId: settledReferenceId,
+      });
+    }
+    return result;
   }
 
   /** `countAs`: a camada que conta a duplicata achada sob o lock; `undefined` na repetição. */
@@ -153,15 +190,15 @@ export class SubmitWagerTransactionUseCase {
     meta: OperationMeta,
     inbox: InboxEntry | undefined,
     countAs: "lock" | undefined,
-  ): Promise<SubmissionResult | DuplicateMessage> {
-    return this.uow.run(async (tx) => {
+  ): Promise<Processed> {
+    return this.uow.run(async (tx): Promise<Processed> => {
       // Ordem de locks: chave da inbox, wallet, linhas da mesma wallet (CLAUDE.md, D7.2).
       if (inbox) {
         const registration = await tx.inbox.register(inbox);
         if (registration === "conflict") throw new InboxConflictError();
         if (registration === "duplicate") {
           this.metrics.countDuplicate("inbox");
-          return DUPLICATE_MESSAGE;
+          return { kind: "duplicate_message" };
         }
       }
       const wallet = await tx.wallets.lockById(command.walletId);
@@ -173,7 +210,7 @@ export class SubmitWagerTransactionUseCase {
       );
       if (existing) {
         if (countAs) this.metrics.countDuplicate(countAs);
-        return replayOf(existing, hash);
+        return { kind: "result", result: replayOf(existing, hash) };
       }
       const sameExternal = await tx.transactions.findByProviderAndExternalId(
         command.providerId,
@@ -216,7 +253,12 @@ export class SubmitWagerTransactionUseCase {
       tx.outbox.append(eventsForTransition({ transaction, wallet, entry, context }), wallet.id);
       // Terminal: as pendentes da mesma wallet que a esperam vencem agora (D4.4).
       if (transaction.isTerminal()) await tx.transactions.nudgeDependents(transaction);
-      return { transaction, idempotentReplay: false };
+      const settledReferenceId = await settledReferenceOf(tx.transactions, transaction, reference);
+      return {
+        kind: "result",
+        result: { transaction, idempotentReplay: false },
+        ...(settledReferenceId !== undefined && { settledReferenceId }),
+      };
     });
   }
 

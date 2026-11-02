@@ -5,7 +5,7 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 | Arquivo | O que é |
 |---|---|
 | `app-errors.ts` | Classes base com categoria: `ValidationError`, `UnauthenticatedError`, `ForbiddenError`, `NotFoundError`, `ConflictError(code)`, `TransientError`. Os módulos estendem estas; o `classifyError` não conhece módulo nenhum. |
-| `classify-error.ts` | `classifyError(error)` → `{ category, httpStatus, code, message, details? }`. |
+| `classify-error.ts` | `classifyError(error)` → `{ category, httpStatus, code, message, details?, db? }`. `db` = `{ sqlState?, constraint?, table? }` de um erro do banco, cada campo conferido contra o formato (D22.9 e): é o que os logs usam. |
 | `http-exception.filter.ts` | Filtro global: corpo `{ error: { code, message, details? } }`, `Retry-After: 1` no `503` (D16.3), log de erros internos e transitórios. |
 | `bootstrap-failure.ts` | `exitOnBootstrapFailure(processo)`: o `bootstrap().catch(...)` de todo entrypoint (`src/entrypoints/main-*.ts`). Classifica pelo `classifyError()`, loga categoria, código e nome do erro (nunca a mensagem, D11.1) em `fatal` e sai com `process.exit(1)`. |
 
@@ -21,8 +21,8 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 | transitório | `503` | `TEMPORARILY_UNAVAILABLE` | JWKS do emissor indisponível (D16.16); SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException`; as mensagens de conexão perdida que o `pg` lança **sem** `code` (Postgres parado ou reiniciado com conexões no pool; lista fechada e comparação exata, D21.9); prazo da requisição esgotado (D21.3) |
 | interno | `500` | `INTERNAL_ERROR` | erro de domínio que escapou da borda, constraint sem tradução, qualquer outra coisa |
 
-Uma constraint violada que o repositório não traduziu para um erro de aplicação é bug, não conflito: vira `500`. A mensagem de um erro interno não vaza para o cliente, e o log leva só nome, SQLSTATE e constraint, nunca o `detail` do banco, que pode trazer valores (D11.1).
+Uma constraint violada que o repositório não traduziu para um erro de aplicação é bug, não conflito: vira `500`. A mensagem de um erro interno não vaza para o cliente, e o log leva só nome, SQLSTATE, constraint e tabela (o `db` do `classifyError()`), nunca o `detail` do banco ("Failing row contains (...)"), o `where`, os parâmetros nem a query que o MikroORM põe na mensagem: todos podem trazer valores e o `player_id` (D11.1, D22.9 e).
 
 ## Testes
 
-`test/unit/errors/classify-error.spec.ts`; `test/unit/errors/bootstrap-failure.spec.ts` (sai com 1, log sem a mensagem do erro); o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`; o `503` com `Retry-After` de um `lock_timeout` real em `test/concurrency/wallet-creation.spec.ts`; o log do `500` sem dados em `test/integration/logging/sensitive-data.spec.ts`.
+`test/unit/errors/classify-error.spec.ts`; `test/unit/errors/bootstrap-failure.spec.ts` (sai com 1, log sem a mensagem do erro); o corpo e os status pela API em `test/integration/wallets/` e `test/integration/auth/`; o `503` com `Retry-After` de um `lock_timeout` real em `test/concurrency/wallet-creation.spec.ts`; o log do `500` sem dados em `test/integration/logging/sensitive-data.spec.ts`; um `CHECK` violado de verdade, pelo HTTP e pela fila, sem valor nem `playerId` nos logs, em `test/integration/observability/pg-error-logs.spec.ts`.

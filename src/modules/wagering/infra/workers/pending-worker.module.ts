@@ -10,6 +10,7 @@ import {
   type UnitOfWork,
 } from "../../application/ports";
 import { ResolvePendingTransactionUseCase } from "../../application/resolve-pending-transaction.use-case";
+import { PromTransactionMetrics } from "../observability/transaction-metrics";
 import { MikroOrmPendingQueue } from "../persistence/pending-queue";
 import { WageringCoreModule } from "../wagering-core.module";
 import { PendingWorker } from "./pending-worker";
@@ -29,9 +30,9 @@ class PendingWorkerShutdown implements OnModuleDestroy {
   providers: [
     {
       provide: ResolvePendingTransactionUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator) =>
-        new ResolvePendingTransactionUseCase(uow, ids),
-      inject: [UNIT_OF_WORK, ID_GENERATOR],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator, logger: Logger) =>
+        new ResolvePendingTransactionUseCase(uow, ids, new PromTransactionMetrics(logger)),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, LOGGER],
     },
     {
       provide: PendingWorker,

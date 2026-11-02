@@ -56,6 +56,17 @@ const RECORD_FAILURE_SQL = `
    WHERE id = ? AND locked_by = ? AND published_at IS NULL
   RETURNING attempts`;
 
+/**
+ * Atraso da outbox (D22.6): quantos não publicados e a idade do mais
+ * antigo, no relógio do banco. O índice parcial `outbox_messages_unpublished_ix`
+ * cobre o `published_at IS NULL`.
+ */
+const BACKLOG_SQL = `
+  SELECT count(*)::int AS pending,
+         COALESCE(extract(epoch FROM now() - min(occurred_at)), 0)::float8 AS lag_seconds
+    FROM outbox_messages
+   WHERE published_at IS NULL`;
+
 interface ClaimRow {
   id: string;
   ordering_key: string;
@@ -93,5 +104,14 @@ export class MikroOrmOutboxStore implements OutboxStore {
       .fork()
       .execute<{ attempts: number }[]>(RECORD_FAILURE_SQL, [failure.errorCode, failure.backoffSeconds, id, leaseToken]);
     return row?.attempts;
+  }
+
+  /** Para os gauges `outbox_pending_events` e `outbox_lag_seconds`, no scrape (D22.6). */
+  async backlog(): Promise<{ pending: number; lagSeconds: number }> {
+    const [row] = await this.orm.em
+      .fork()
+      .execute<{ pending: number | string; lag_seconds: number | string }[]>(BACKLOG_SQL);
+    // O MikroORM troca os parsers do `pg`: os números podem chegar como texto.
+    return { pending: Number(row?.pending ?? 0), lagSeconds: Math.max(0, Number(row?.lag_seconds ?? 0)) };
   }
 }

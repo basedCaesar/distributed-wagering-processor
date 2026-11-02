@@ -26,7 +26,10 @@ export interface EventAuditorDeps extends SqsConsumerDeps {
 export class EventAuditor extends SqsConsumer {
   constructor(deps: EventAuditorDeps, policy: Partial<ConsumerPolicy> = {}) {
     const consumerName = policy.consumerName ?? EVENT_AUDITOR_NAME;
-    super(deps, auditParser(deps, consumerName), { ...policy, consumerName });
+    super(deps, auditParser(deps, consumerName), { ...policy, consumerName }, {
+      component: "event_auditor",
+      consumer: "event_auditor",
+    });
   }
 }
 

@@ -32,6 +32,12 @@ export const configSchema = z.object({
   }),
   healthCheckTimeoutMs: z.coerce.number().int().positive().default(1000),
   /**
+   * Porta interna do `/metrics`, sem auth, em todo processo (D11.2, D22.1).
+   * `0` escolhe uma porta livre: os testes que sobem vários módulos Nest no
+   * mesmo processo usam isso.
+   */
+  metricsPort: z.coerce.number().int().min(0).max(65_535).default(9464),
+  /**
    * Publisher da outbox (D9.6, D20.5): o timeout de uma chamada ao SNS tem
    * de ser menor que o lease, senão uma chamada lenta deixa o lease vencer
    * e outra instância publica de novo.

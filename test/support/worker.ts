@@ -5,6 +5,7 @@ import type { Client } from "pg";
 import { PendingWorkerAppModule } from "../../src/app/pending-worker.module";
 import type { ClaimedPending, UnitOfWork } from "../../src/modules/wagering/application/ports";
 import { ResolvePendingTransactionUseCase } from "../../src/modules/wagering/application/resolve-pending-transaction.use-case";
+import { PromTransactionMetrics } from "../../src/modules/wagering/infra/observability/transaction-metrics";
 import { WAGERING_ENTITIES } from "../../src/modules/wagering/infra/persistence";
 import { MikroOrmUnitOfWork } from "../../src/modules/wagering/infra/persistence/mikro-orm-unit-of-work";
 import { MikroOrmPendingQueue } from "../../src/modules/wagering/infra/persistence/pending-queue";
@@ -35,7 +36,12 @@ export async function startTestWorker(
   });
   const base = new MikroOrmUnitOfWork(orm);
   const uow = options.wrapUow ? options.wrapUow(base) : base;
-  const useCase = new ResolvePendingTransactionUseCase(uow, { next: () => Bun.randomUUIDv7() });
+  // As métricas de produção (D22): os testes de observabilidade leem o registry do processo.
+  const useCase = new ResolvePendingTransactionUseCase(
+    uow,
+    { next: () => Bun.randomUUIDv7() },
+    new PromTransactionMetrics(logger),
+  );
   const queue = new MikroOrmPendingQueue(orm);
   const worker = new PendingWorker(
     queue,

@@ -5,6 +5,8 @@ import {
   wrap,
 } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
+import { classifyError } from "../../../../shared/errors/classify-error";
+import { walletLockConflictsTotal, walletLockWaitSeconds } from "../../../../shared/metrics/metrics";
 import type { IntegrationEvent } from "../../domain/events/integration-event";
 import {
   type WagerTransaction,
@@ -60,6 +62,15 @@ const TRANSACTION_IDENTITY_UQS: ReadonlySet<string> = new Set([
 ]);
 
 const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+
+/** O que liquida uma `BET` (D1.7, D22.8). */
+const SETTLEMENT_KINDS = [WagerTransactionKind.Win, WagerTransactionKind.Loss];
+
+/** SQLSTATE → motivo do `wallet_lock_conflicts_total` (D22.5). */
+const LOCK_CONFLICTS: Readonly<Record<string, "lock_timeout" | "deadlock">> = {
+  "55P03": "lock_timeout",
+  "40P01": "deadlock",
+};
 
 /**
  * "Cutucada" (D4.4, D18.6): só as pendentes da **mesma wallet** que
@@ -222,11 +233,22 @@ function walletRepository(em: EntityManager): WalletRepository {
       );
       return record?.id;
     },
+    // Espera e conflitos do lock da wallet (D22.5): o ponto de disputa (D7.2).
     async lockById(id) {
-      const record = await em.findOne(WalletSchema, id, {
-        lockMode: LockMode.PESSIMISTIC_WRITE,
-      });
-      return record ? walletFromRecord(record) : undefined;
+      const startedAt = performance.now();
+      try {
+        const record = await em.findOne(WalletSchema, id, {
+          lockMode: LockMode.PESSIMISTIC_WRITE,
+        });
+        walletLockWaitSeconds.observe((performance.now() - startedAt) / 1000);
+        return record ? walletFromRecord(record) : undefined;
+      } catch (error) {
+        // Só conta; o erro segue para quem chamou (transitório, D5).
+        const sqlState = classifyError(error).db?.sqlState;
+        const reason = sqlState === undefined ? undefined : LOCK_CONFLICTS[sqlState];
+        if (reason !== undefined) walletLockConflictsTotal.inc({ reason });
+        throw error;
+      }
     },
     // O record gerenciado vem do `lockById`; o flush grava só o que mudou.
     // A `version` vai como o domínio a deixou (D7.2, D15.7).
@@ -348,6 +370,15 @@ function transactionRepository(em: EntityManager): WagerTransactionRepository {
         kind: { $in: REVERSAL_KINDS },
       });
       return { found: true, transaction: reference, alreadyReversed: reversals > 0 };
+    },
+    // D1.7, D22.8: WIN/LOSS PROCESSED apontando para a BET.
+    async isSettled(betId) {
+      const settlements = await em.count(WagerTransactionSchema, {
+        referenceTransactionId: betId,
+        status: WagerTransactionStatus.Processed,
+        kind: { $in: SETTLEMENT_KINDS },
+      });
+      return settlements > 0;
     },
   };
 }

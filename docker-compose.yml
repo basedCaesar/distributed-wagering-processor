@@ -9,6 +9,10 @@ x-app: &app
   build: .
   restart: unless-stopped
   stop_grace_period: 30s
+  # /metrics (D11.2, D22.1): só na rede interna do Compose, sem `ports`, sem
+  # auth. O nginx não roteia para ela.
+  expose:
+    - "9464"
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -21,6 +25,8 @@ x-app-env: &app-env
   NODE_ENV: development
   # A config exige PORT em todo processo; só a api escuta nela.
   PORT: "3000"
+  # Porta interna do /metrics, em todo processo (D22.1).
+  METRICS_PORT: "9464"
   DB_HOST: postgres
   DB_PORT: "5432"
   DB_NAME: wagering

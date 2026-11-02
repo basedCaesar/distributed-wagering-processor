@@ -4,10 +4,17 @@ import { WagerTransactionProcessed } from "../domain/events/wager-transaction-pr
 import { WalletBalanceChanged } from "../domain/events/wallet-balance-changed";
 import { WalletOpened } from "../domain/events/wallet-opened";
 import type { Money } from "../domain/money";
+import type { WagerTransaction } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import { openWallet } from "../domain/wager-transaction-rules";
 import { DuplicateWalletError, WalletAlreadyExistsError } from "./errors";
-import type { IdGenerator, OperationMeta, UnitOfWork } from "./ports";
+import {
+  type IdGenerator,
+  NO_TRANSACTION_METRICS,
+  type OperationMeta,
+  type TransactionMetrics,
+  type UnitOfWork,
+} from "./ports";
 
 export interface OpenWalletCommand {
   playerId: string;
@@ -19,15 +26,28 @@ export interface OpenWalletCommand {
  * numa transação SQL só (R-09-03, D6.2, D9.4). Sem pré-checagem: o
  * `UNIQUE (player_id, currency)` é a barreira, e quem perde a corrida
  * recebe o id da wallet que ganhou (D6.3). Os horários vêm do `now()` da
- * transação no banco (D18.12).
+ * transação no banco (D18.12). Depois do commit, a `OPENING` conta como
+ * transação `PROCESSED` com `channel=http` (D22.2).
  */
 export class OpenWalletUseCase {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
+    private readonly metrics: TransactionMetrics = NO_TRANSACTION_METRICS,
   ) {}
 
   async execute(command: OpenWalletCommand, meta: OperationMeta): Promise<Wallet> {
+    const { wallet, opening } = await this.open(command, meta);
+    if (opening) {
+      this.metrics.countDecision({ status: opening.status, kind: opening.kind, channel: "http" });
+    }
+    return wallet;
+  }
+
+  private async open(
+    command: OpenWalletCommand,
+    meta: OperationMeta,
+  ): Promise<{ wallet: Wallet; opening: WagerTransaction | undefined }> {
     try {
       return await this.uow.run(async (tx) => {
         const at = await tx.now();
@@ -59,7 +79,7 @@ export class OpenWalletUseCase {
           tx.ledger.insert(opening.entry);
         }
         tx.outbox.append(events, wallet.id);
-        return wallet;
+        return { wallet, opening: opening?.transaction };
       });
     } catch (error) {
       if (!(error instanceof DuplicateWalletError)) throw error;

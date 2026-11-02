@@ -105,6 +105,8 @@ function fake(options: FakeOptions) {
       nudgeDependents: async (tx: WagerTransaction) => {
         written.nudged = tx;
       },
+      // Porta nova da S9 (D22.8): a BET nunca está liquidada neste fake.
+      isSettled: async () => false,
     },
     ledger: {
       insert: () => {

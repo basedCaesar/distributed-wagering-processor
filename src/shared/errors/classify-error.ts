@@ -27,6 +27,46 @@ export interface ClassifiedError {
   /** Mensagem segura para o cliente: a de um erro interno nunca vaza. */
   message: string;
   details?: Record<string, unknown>;
+  /**
+   * Identificação de um erro do banco, para o log (D22.9 e): só SQLSTATE,
+   * constraint e tabela. Nunca o `detail`, o `where`, os parâmetros nem a
+   * query, que trazem a linha com valores e `player_id`.
+   */
+  db?: DbErrorFields;
+}
+
+export interface DbErrorFields {
+  sqlState?: string;
+  constraint?: string;
+  table?: string;
+}
+
+/** SQLSTATE: 5 caracteres alfanuméricos maiúsculos. */
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+/** Identificador do Postgres sem aspas: o que as nossas migrations criam. */
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
+function pick(source: object, key: string, format: RegExp): string | undefined {
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "string" && format.test(value) ? value : undefined;
+}
+
+/**
+ * Os campos de identificação de um erro do `pg` (ou do MikroORM, que os
+ * copia), cada um conferido contra o formato esperado: um valor fora do
+ * formato é descartado, nunca repassado. `undefined` se não houver nenhum.
+ */
+export function dbErrorFields(error: unknown): DbErrorFields | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const sqlState = pick(error, "code", SQLSTATE);
+  const constraint = pick(error, "constraint", IDENTIFIER);
+  const table = pick(error, "table", IDENTIFIER);
+  if (sqlState === undefined && constraint === undefined && table === undefined) return undefined;
+  return {
+    ...(sqlState !== undefined && { sqlState }),
+    ...(constraint !== undefined && { constraint }),
+    ...(table !== undefined && { table }),
+  };
 }
 
 /**
@@ -116,6 +156,12 @@ function isTransientDriverError(error: unknown): boolean {
  * tradução ou qualquer outra coisa desconhecida é bug → `500`.
  */
 export function classifyError(error: unknown): ClassifiedError {
+  const classified = classify(error);
+  const db = error instanceof AppError ? undefined : dbErrorFields(error);
+  return db === undefined ? classified : { ...classified, db };
+}
+
+function classify(error: unknown): ClassifiedError {
   if (error instanceof AppError) {
     if (error instanceof ValidationError) {
       return of("validation", error.message, error.details);

@@ -20,6 +20,8 @@ import {
 } from "../../../../shared/http/correlation.middleware";
 import { ApiErrorResponses } from "../../../../shared/http/error-responses";
 import { parseOrThrow } from "../../../../shared/http/zod";
+import { enrichContext } from "../../../../shared/logger/request-context";
+import { measured } from "../observability/processing-duration";
 // biome-ignore lint/style/useImportType: NestJS resolve a injeção pelo tipo do construtor em runtime
 import { SubmitWagerTransactionUseCase } from "../../application/submit-wager-transaction.use-case";
 // biome-ignore lint/style/useImportType: NestJS resolve a injeção pelo tipo do construtor em runtime
@@ -107,14 +109,19 @@ export class WagerTransactionsController {
     if (input.providerId !== identityOf(identity).providerId) {
       throw new ForbiddenError("providerId do corpo diferente do token");
     }
-    const result = await this.submitTransaction.execute(
-      {
-        ...input,
-        idempotencyKey: key,
-        referenceExternalTransactionId: input.referenceExternalTransactionId,
-      },
-      { correlationId: meta.correlationId, causationId: meta.requestId },
+    // Só ids validados entram nos logs (D11.1, D17.1, D22.9 a).
+    enrichContext({ providerId: input.providerId, walletId: input.walletId });
+    const result = await measured("http", () =>
+      this.submitTransaction.execute(
+        {
+          ...input,
+          idempotencyKey: key,
+          referenceExternalTransactionId: input.referenceExternalTransactionId,
+        },
+        { correlationId: meta.correlationId, causationId: meta.requestId },
+      ),
     );
+    enrichContext({ transactionId: result.transaction.id });
     response.status(submissionHttpStatus(result.transaction));
     return presentSubmission(result);
   }
@@ -129,6 +136,7 @@ export class WagerTransactionsController {
     @CurrentIdentity() identity: Identity | undefined,
   ) {
     const id = parseOrThrow(transactionIdSchema, transactionId, "transactionId");
+    enrichContext({ transactionId: id });
     return presentTransaction(await this.queries.getById(id, viewerOf(identityOf(identity))));
   }
 

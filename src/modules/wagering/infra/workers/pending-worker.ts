@@ -1,9 +1,11 @@
 import type { Logger } from "pino";
 import { classifyError } from "../../../../shared/errors/classify-error";
 import { runWithContext } from "../../../../shared/logger/request-context";
+import { wageringRetriesTotal } from "../../../../shared/metrics/metrics";
 import { PENDING_POLICY } from "../../application/pending-policy";
 import type { ClaimedPending, PendingQueue } from "../../application/ports";
 import type { ResolvePendingTransactionUseCase } from "../../application/resolve-pending-transaction.use-case";
+import { measured } from "../observability/processing-duration";
 
 export interface PendingWorkerOptions {
   batchSize: number;
@@ -105,13 +107,22 @@ export class PendingWorker {
   private handle(item: ClaimedPending): Promise<void> {
     return runWithContext({ transactionId: item.id, walletId: item.walletId }, async () => {
       try {
-        const result = await this.useCase.attempt(item);
+        // Latência da tentativa (D22.7).
+        const result = await measured("worker", () => this.useCase.attempt(item));
         this.logger.debug({ result: result.kind }, "tentativa da pendente concluída");
         return;
       } catch (error) {
-        const { category, code } = classifyError(error);
-        this.logger.warn({ category, code }, "tentativa da pendente falhou");
-        await this.record(item, category === "transient");
+        const classified = classifyError(error);
+        this.logger.warn(
+          {
+            category: classified.category,
+            code: classified.code,
+            ...(classified.db?.sqlState !== undefined && { sqlState: classified.db.sqlState }),
+            ...(classified.db?.constraint !== undefined && { constraint: classified.db.constraint }),
+          },
+          "tentativa da pendente falhou",
+        );
+        await this.record(item, classified.category === "transient");
       }
     });
   }
@@ -119,6 +130,8 @@ export class PendingWorker {
   private async record(item: ClaimedPending, transient: boolean): Promise<void> {
     try {
       const result = await this.useCase.recordError(item, { transient });
+      // Reagendada depois de um erro: um retry do worker (D22.3).
+      if (result.kind === "rescheduled") wageringRetriesTotal.inc({ component: "pending_worker" });
       if (result.kind === "resolved") {
         this.logger.error({ status: result.status }, "pendente marcada FAILED depois de erros seguidos");
       }

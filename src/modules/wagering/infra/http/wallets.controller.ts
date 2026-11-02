@@ -27,6 +27,7 @@ import {
   type RequestMeta,
 } from "../../../../shared/http/correlation.middleware";
 import { parseOrThrow } from "../../../../shared/http/zod";
+import { enrichContext } from "../../../../shared/logger/request-context";
 // biome-ignore lint/style/useImportType: NestJS resolve a injeção pelo tipo do construtor em runtime
 import { OpenWalletUseCase } from "../../application/open-wallet.use-case";
 // biome-ignore lint/style/useImportType: NestJS resolve a injeção pelo tipo do construtor em runtime
@@ -91,6 +92,8 @@ export class WalletsController {
       correlationId: meta.correlationId,
       causationId: meta.requestId,
     });
+    // Só o id: o `playerId` nunca entra nos logs (D11.1, D22.9 a).
+    enrichContext({ walletId: wallet.id });
     return presentWallet(wallet);
   }
 
@@ -101,6 +104,7 @@ export class WalletsController {
   @ApiErrorResponses(400, 401, 404, 503)
   async get(@Param("walletId") walletId: string) {
     const id = parseOrThrow(walletIdSchema, walletId, "walletId");
+    enrichContext({ walletId: id });
     return presentWallet(await this.queries.getWallet(id));
   }
 
@@ -116,6 +120,7 @@ export class WalletsController {
   @ApiErrorResponses(400, 401, 404, 503)
   async ledger(@Param("walletId") walletId: string, @Query() query: unknown) {
     const id = parseOrThrow(walletIdSchema, walletId, "walletId");
+    enrichContext({ walletId: id });
     const { cursor, limit } = parseOrThrow(ledgerQuerySchema, query, "query");
     return presentLedgerPage(
       await this.queries.listLedger(id, {
@@ -138,6 +143,7 @@ export class WalletsController {
   @ApiErrorResponses(400, 401, 403, 404, 503)
   async reconcile(@Param("walletId") walletId: string) {
     const id = parseOrThrow(walletIdSchema, walletId, "walletId");
+    enrichContext({ walletId: id });
     return presentReconciliation(await this.reconcileWallet.execute(id));
   }
 }

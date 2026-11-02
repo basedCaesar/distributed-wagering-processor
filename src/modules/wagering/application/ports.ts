@@ -1,5 +1,9 @@
 import type { IntegrationEvent } from "../domain/events/integration-event";
-import type { WagerTransaction } from "../domain/wager-transaction";
+import type {
+  WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from "../domain/wager-transaction";
 import type { ReferenceLookup } from "../domain/wager-transaction-rules";
 import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
@@ -80,6 +84,12 @@ export interface WagerTransactionRepository {
    * pulando as travadas (`SKIP LOCKED`). Não mexe em tentativas nem lease.
    */
   nudgeDependents(tx: WagerTransaction): Promise<void>;
+  /**
+   * A `BET` está liquidada: existe um `WIN` ou `LOSS` `PROCESSED` cujo
+   * `reference_transaction_id` é ela (D1.7, D22.8). Só sob o lock da
+   * wallet dela.
+   */
+  isSettled(betId: string): Promise<boolean>;
 }
 
 /** Colunas de controle do worker, fora da entidade (D4.5, D18.1). */
@@ -250,6 +260,46 @@ export interface SubmissionMetrics {
   countDuplicate(layer: DuplicateLayer): void;
 }
 
+/**
+ * Por onde a transação chegou (D22.2): a submissão sem inbox é `http`, com
+ * a inbox é `sqs` (D19.4); o worker de pendentes é `worker`.
+ */
+export type TransactionChannel = "http" | "sqs" | "worker";
+
+/** Um estado gravado (D22.2). */
+export interface TransactionDecision {
+  status: WagerTransactionStatus;
+  kind: WagerTransactionKind;
+  channel: TransactionChannel;
+}
+
+/** Um `REFUND` aplicado a uma `BET` liquidada (D1.7, D22.8): só ids. */
+export interface RefundAfterSettlement {
+  channel: TransactionChannel;
+  transactionId: string;
+  walletId: string;
+  referenceTransactionId: string;
+}
+
+/**
+ * Métricas e alertas da submissão e do worker (D22.2, D22.3, D22.8). Tudo
+ * é chamado **depois** do commit: uma transação desfeita não conta.
+ */
+export interface TransactionMetrics {
+  countDecision(decision: TransactionDecision): void;
+  /** A repetição da D3.6 depois de um `UNIQUE` (D22.3, `component=submission`). */
+  countSubmissionRetry(): void;
+  /** Métrica e log `refund_after_settlement`; não bloqueia (D1.7). */
+  refundAfterSettlement(event: RefundAfterSettlement): void;
+}
+
+/** Sem métricas: o padrão dos testes de unidade que não olham para elas. */
+export const NO_TRANSACTION_METRICS: TransactionMetrics = {
+  countDecision: () => {},
+  countSubmissionRetry: () => {},
+  refundAfterSettlement: () => {},
+};
+
 /** Rastreio da operação, para os eventos (D9.5). */
 export interface OperationMeta {
   correlationId: string;
@@ -261,3 +311,4 @@ export const ID_GENERATOR = Symbol("ID_GENERATOR");
 export const RECONCILIATION_METRICS = Symbol("RECONCILIATION_METRICS");
 export const RECONCILIATION_LOG = Symbol("RECONCILIATION_LOG");
 export const SUBMISSION_METRICS = Symbol("SUBMISSION_METRICS");
+export const TRANSACTION_METRICS = Symbol("TRANSACTION_METRICS");

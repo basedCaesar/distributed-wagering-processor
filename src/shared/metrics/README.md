@@ -1,19 +1,57 @@
 # shared/metrics
 
-Registry `prom-client` do processo (D11.2). O endpoint `/metrics` chega na S9; até lá, as métricas já são contadas (D16.6).
+Métricas do processo com `prom-client` 15.x (D11.2, D22.10), servidas em `/metrics`.
 
-| Métrica | Tipo | Quando |
-|---|---|---|
-| `reconciliation_divergences_total` | counter | uma reconciliação encontrou divergência (R-09-19, D6.9) |
-| `wagering_duplicates_total{layer}` | counter | uma submissão duplicada foi detectada: `fast_path` (checagem rápida, antes do lock), `lock` (checagem autoritativa, sob o lock da wallet) ou `unique_index` (o `UNIQUE` de key ou de id externo barrou o commit) (D11.2, D17.7). A inbox da fila conta `inbox` (D19.4) |
-| `outbox_events_stalled_total` | counter | uma falha de publicação de um evento com 20 tentativas ou mais: o alerta; o evento continua sendo tentado (D9.6, D20.4) |
-| `audited_events_out_of_order_total` | counter | o auditor recebeu um evento com `walletVersion` menor ou igual à última da mesma wallet e do mesmo tipo (D20.1) |
+## O endpoint (D22.1)
 
-A `application/` não importa `prom-client`: conta pelas portas `ReconciliationMetrics` e `SubmissionMetrics`, e os adaptadores ficam em `src/modules/wagering/infra/observability/`. O publisher e o auditor (infra) recebem um callback (`OutboxAlerts`, `AuditAlerts`) ligado ao contador no módulo Nest, e os testes o trocam.
+- `metrics-server.ts`: um `Bun.serve` próprio na porta `METRICS_PORT` (padrão 9464), **em todo processo** (`api`, `consumer`, `outbox-publisher`, `pending-worker`, `event-auditor`). Só `GET /metrics`; o resto é `404`. Sem auth.
+- `metrics.module.ts`: sobe o servidor no bootstrap e o fecha no shutdown. Cada módulo raiz de `src/app/` o importa.
+- A porta pública da `api` **não** serve `/metrics` (`404`). No Compose, a porta 9464 só fica exposta na rede interna (`expose`, sem `ports`), e o nginx não roteia para ela. Fica fora do Swagger: não é da API Nest.
+- `METRICS_PORT=0` escolhe uma porta livre (os testes com vários módulos Nest no mesmo processo usam isso).
 
-Testes:
-- `test/integration/wallets/reconciliation.spec.ts`: a métrica sobe uma vez por divergência e não sobe numa wallet íntegra;
-- `test/concurrency/submit-transaction.spec.ts`: nas 50 BETs iguais, `fast_path + lock = 49` e `unique_index = 0`; a mesma key em duas wallets conta `unique_index = 1`;
-- `test/unit/application/submit-wager-transaction.spec.ts`: a repetição depois do `UNIQUE` não conta de novo;
-- `test/unit/outbox/outbox-publisher.spec.ts`: o alerta conta a partir da 20ª tentativa, e não antes;
-- `test/integration/outbox/event-auditor.spec.ts`: o alarme do auditor dispara uma vez para a versão menor e não dispara para o par Processed/BalanceChanged.
+Para ler de dentro do Compose:
+
+```bash
+docker compose exec api bun -e 'console.log(await (await fetch("http://localhost:9464/metrics")).text())'
+```
+
+## As métricas
+
+| Métrica | Tipo | Labels | Quando | Decisão |
+|---|---|---|---|---|
+| `wagering_transactions_total` | counter | `status`, `kind`, `channel` | um estado gravado, **depois do commit**; replay não conta | R-12-03, D22.2 |
+| `wagering_duplicates_total` | counter | `layer` | duplicata detectada: `fast_path`, `lock`, `unique_index` ou `inbox` | D17.7 |
+| `wagering_retries_total` | counter | `component` | nova tentativa agendada depois de uma falha: `consumer`, `event_auditor`, `pending_worker`, `outbox_publisher`, `submission` (a repetição da D3.6) | D22.3 |
+| `wagering_dlq_messages_total` | counter | `consumer`, `reason` | o consumidor copiou a mensagem para a DLQ; `reason` = o `code` do `classifyError()` ou `ATTEMPTS_EXHAUSTED` | D22.4 |
+| `sqs_dlq_depth` | gauge | `queue` | `ApproximateNumberOfMessages` da DLQ, lido **no scrape** (timeout de 1 s); o `consumer` lê a de transações, o `event-auditor` a dele | D22.4 |
+| `wallet_lock_wait_seconds` | histograma | — | o `SELECT … FOR UPDATE` da wallet, nos três canais | D22.5 |
+| `wallet_lock_conflicts_total` | counter | `reason` | o lock da wallet falhou: `lock_timeout` (55P03) ou `deadlock` (40P01) | D22.5 |
+| `outbox_pending_events` | gauge | — | eventos não publicados, lido no scrape pelo `outbox-publisher` | D22.6 |
+| `outbox_lag_seconds` | gauge | — | idade do não publicado mais antigo (0 sem nenhum), lido no scrape | D22.6 |
+| `wagering_processing_duration_seconds` | histograma | `channel`, `outcome` | a chamada ao use case: controller, `process()` do consumidor, tentativa do worker | D22.7 |
+| `wagering_refund_after_settlement_total` | counter | `channel` | um `REFUND` **aplicado** a uma `BET` com `WIN`/`LOSS` `PROCESSED`; também loga `warn` `refund_after_settlement` com ids | D1.7, D22.8 |
+| `reconciliation_divergences_total` | counter | — | uma reconciliação encontrou divergência | R-09-19, D6.9 |
+| `outbox_events_stalled_total` | counter | — | falha de publicação com 20 tentativas ou mais (o alerta) | D9.6, D20.4 |
+| `audited_events_out_of_order_total` | counter | — | o auditor recebeu um evento fora de ordem por (wallet, tipo) | D20.1 |
+
+Os gauges lidos no scrape têm uma fonte registrada pelo processo dono (`registerDlqDepthSource`, `registerOutboxBacklogSource`, via `infra/observability/gauges.ts`). Leitura que falha ou estoura o prazo: log `warn` e o gauge fica com o último valor.
+
+### Redrive do SQS × contador de DLQ (D22.4)
+
+A mensagem que o **redrive do SQS** move para a DLQ (`maxReceiveCount = 20`, D8.3, D19.3: por exemplo, quando o banco está fora e o consumidor não consegue nem contar a tentativa) **não passa pelo consumidor**. Por isso ela **não** entra em `wagering_dlq_messages_total`: aparece só em `sqs_dlq_depth`. Uma diferença entre o crescimento da profundidade e o contador é justamente o que o redrive moveu.
+
+## Labels: só conjuntos fechados (D22.11)
+
+`METRIC_LABEL_VALUES` em `metrics.ts` é a lista de cada label e dos valores possíveis. Nenhum label carrega id (`walletId`, `transactionId`, `providerId`, `playerId`, `messageId`, `eventId`): os ids ficam nos logs (D11.1). Um `code` fora da lista vira `OTHER` (`dlqReason`).
+
+## Camadas
+
+A `application/` não importa `prom-client`: conta pelas portas `ReconciliationMetrics`, `SubmissionMetrics` e `TransactionMetrics`, com adaptadores em `src/modules/wagering/infra/observability/`. A infra (repositório, consumidor, worker, publisher, controllers) usa os objetos de `metrics.ts` diretamente.
+
+## Testes
+
+- `test/unit/metrics/metric-labels.spec.ts`: todo label do registry está na lista permitida, nenhum é um id, e todas as métricas da D11.2 estão registradas (D22.11);
+- `test/integration/observability/metrics.spec.ts`: cada situação dispara e a métrica muda: transações por status, kind e canal (HTTP, fila, worker, `OPENING`; replay não conta), duplicatas, retries por componente, DLQ por motivo e profundidade, espera e `lock_timeout`, pendentes e lag da outbox, latência por canal, `refund_after_settlement`; no fim, todo valor de label observado está no conjunto fechado;
+- `test/integration/observability/metrics-endpoint.spec.ts`: os 5 processos reais servem `/metrics` na porta interna sem token; a porta pública da `api` dá `404`; cada processo conta o que fez (montagem de produção);
+- `test/unit/application/transaction-metrics.spec.ts` e `resolve-pending-metrics.spec.ts`: o use case conta depois do commit, não conta replay nem commit que falhou, e só consulta a liquidação para um `REFUND` aplicado;
+- `test/integration/wallets/reconciliation.spec.ts`, `test/concurrency/submit-transaction.spec.ts`, `test/unit/outbox/outbox-publisher.spec.ts`, `test/integration/outbox/event-auditor.spec.ts`: as métricas das fatias anteriores.

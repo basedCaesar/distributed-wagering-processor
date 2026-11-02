@@ -119,4 +119,11 @@ Evento sem `walletVersion` (rejeição, pendente) → `in_order` nulo, sem checa
 
 **Limitação aceita do teste do backoff de 2 s:** a reentrega medida no SQS só mostra que a mensagem voltou dentro da janela do long poll (6 s), e a contagem de mensagens em voo é aproximada. O valor exato de 2ⁿ s é garantido pelo teste de unidade (`consumer-policy.spec.ts`); o de integração só prova que o retry não fica com os 120 s do receive.
 
+## Métricas e logs (D22)
+
+- Cada retry agendado conta em `wagering_retries_total{component}` (`consumer` ou `event_auditor`, D22.3).
+- Cada cópia para a DLQ feita pelo consumidor conta em `wagering_dlq_messages_total{consumer, reason}`, com `reason` = o `code` do `classifyError()` ou `ATTEMPTS_EXHAUSTED`, inclusive quando o delete falha depois do envio (D22.4). **A mensagem movida pelo redrive do SQS (`maxReceiveCount = 20`) não passa pelo consumidor: não entra no contador, só no gauge `sqs_dlq_depth`**, que cada processo lê da própria DLQ no scrape.
+- O `process()` do consumidor de transações é medido em `wagering_processing_duration_seconds{channel="sqs"}` (D22.7) e põe o `transactionId` no contexto (D22.9 a).
+- Um erro vai para o log com `category`, `code` e, se for do banco, só `sqlState`, `constraint` e `table` (D22.9 e).
+
 `test/support/sqs.ts` cria um par de filas FIFO por teste, com os atributos do init (D19.8). `test/support/consumer.ts` monta um consumidor sobre um MikroORM próprio (duas chamadas = duas instâncias), com falhas injetáveis na unidade de trabalho e no cliente SQS. `test/support/auditor.ts` faz o mesmo para o auditor, com o envelope do §11 em texto.

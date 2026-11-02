@@ -8,15 +8,24 @@ import {
 import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import { isExpired, nextAttemptAt, reachedErrorLimit } from "./pending-policy";
-import type {
-  ClaimedPending,
-  IdGenerator,
-  LockedPending,
-  PendingControl,
-  TransactionScope,
-  UnitOfWork,
+import {
+  type ClaimedPending,
+  type IdGenerator,
+  type LockedPending,
+  NO_TRANSACTION_METRICS,
+  type PendingControl,
+  type TransactionMetrics,
+  type TransactionScope,
+  type UnitOfWork,
 } from "./ports";
+import { settledReferenceOf } from "./refund-after-settlement";
 import { eventsForTransition } from "./transaction-events";
+
+/** O que contar depois do commit (D22.2, D22.8). */
+interface Settled {
+  tx: WagerTransaction;
+  settledReferenceId: string | undefined;
+}
 
 export type PendingResolution =
   /**
@@ -51,14 +60,48 @@ export type PendingResolution =
  * própria depois que a tentativa foi desfeita.
  *
  * Nunca publica: eventos viram linhas da outbox (D9).
+ *
+ * Depois do commit, um estado terminal conta com `channel=worker` (D22.2),
+ * e um `REFUND` aplicado a uma `BET` liquidada dispara o
+ * `refund_after_settlement` (D1.7, D22.8).
  */
 export class ResolvePendingTransactionUseCase {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly ids: IdGenerator,
+    private readonly metrics: TransactionMetrics = NO_TRANSACTION_METRICS,
   ) {}
 
-  attempt(claimed: ClaimedPending): Promise<PendingResolution> {
+  async attempt(claimed: ClaimedPending): Promise<PendingResolution> {
+    const settled: Settled[] = [];
+    const resolution = await this.attemptInTransaction(claimed, settled);
+    this.report(settled);
+    return resolution;
+  }
+
+  async recordError(claimed: ClaimedPending, error: { transient: boolean }): Promise<PendingResolution> {
+    const settled: Settled[] = [];
+    const resolution = await this.recordErrorInTransaction(claimed, error, settled);
+    this.report(settled);
+    return resolution;
+  }
+
+  /** Já commitado (D22.2, D22.8). */
+  private report(settled: readonly Settled[]): void {
+    for (const { tx, settledReferenceId } of settled) {
+      this.metrics.countDecision({ status: tx.status, kind: tx.kind, channel: "worker" });
+      if (settledReferenceId !== undefined) {
+        this.metrics.refundAfterSettlement({
+          channel: "worker",
+          transactionId: tx.id,
+          walletId: tx.walletId,
+          referenceTransactionId: settledReferenceId,
+        });
+      }
+    }
+  }
+
+  private attemptInTransaction(claimed: ClaimedPending, settled: Settled[]): Promise<PendingResolution> {
     const attemptId = this.ids.next();
     return this.uow.run(async (scope) => {
       const locked = await lockPending(scope, claimed);
@@ -71,7 +114,7 @@ export class ResolvePendingTransactionUseCase {
         // A FK garante a wallet: sem ela, é dado corrompido e nenhuma
         // tentativa vai resolver (D18.13).
         const control = afterError(pending.control, false);
-        return this.fail(scope, { pending, control, attemptId, now });
+        return this.fail(scope, { pending, control, attemptId, now, settled });
       }
 
       const reference = await scope.transactions.findReference(
@@ -99,7 +142,8 @@ export class ResolvePendingTransactionUseCase {
       }
       const entry =
         outcome.status === WagerTransactionStatus.Processed ? outcome.entry : undefined;
-      return this.settle(scope, { wallet, pending, control, entry, attemptId, now });
+      const settledReferenceId = await settledReferenceOf(scope.transactions, tx, reference);
+      return this.settle(scope, { wallet, pending, control, entry, attemptId, now, settled, settledReferenceId });
     });
   }
 
@@ -108,9 +152,10 @@ export class ResolvePendingTransactionUseCase {
    * conta; no 5º seguido, `FAILED` (D4.2, D18.4). Sem wallet, `FAILED` já
    * no primeiro (D18.13). Não expira: não deu para avaliar (D18.11).
    */
-  recordError(
+  private recordErrorInTransaction(
     claimed: ClaimedPending,
     error: { transient: boolean },
+    settled: Settled[],
   ): Promise<PendingResolution> {
     const attemptId = this.ids.next();
     return this.uow.run(async (scope) => {
@@ -121,13 +166,13 @@ export class ResolvePendingTransactionUseCase {
 
       if (!wallet) {
         const control = afterError(pending.control, false);
-        return this.fail(scope, { pending, control, attemptId, now });
+        return this.fail(scope, { pending, control, attemptId, now, settled });
       }
       const control = afterError(pending.control, error.transient);
       if (error.transient || !reachedErrorLimit(control.consecutiveErrors)) {
         return this.reschedule(scope, pending.transaction, control, now);
       }
-      return this.fail(scope, { pending, control, attemptId, now });
+      return this.fail(scope, { pending, control, attemptId, now, settled });
     });
   }
 
@@ -145,10 +190,10 @@ export class ResolvePendingTransactionUseCase {
   /** `FAILED PROCESSING_FAILED` (D4.2, D18.4, D18.13). */
   private fail(
     scope: TransactionScope,
-    input: { pending: LockedPending; control: PendingControl; attemptId: string; now: Date },
+    input: { pending: LockedPending; control: PendingControl; attemptId: string; now: Date; settled: Settled[] },
   ): Promise<PendingResolution> {
     input.pending.transaction.fail(FailureCode.ProcessingFailed);
-    return this.settle(scope, { ...input, wallet: undefined, entry: undefined });
+    return this.settle(scope, { ...input, wallet: undefined, entry: undefined, settledReferenceId: undefined });
   }
 
   /** A pendente chegou a um estado terminal: grava, emite e cutuca (D4.4, D18.6). */
@@ -161,10 +206,14 @@ export class ResolvePendingTransactionUseCase {
       entry: WalletLedgerEntry | undefined;
       attemptId: string;
       now: Date;
+      /** Recebe o que contar depois do commit (D22.2, D22.8). */
+      settled: Settled[];
+      settledReferenceId: string | undefined;
     },
   ): Promise<PendingResolution> {
     const { wallet, pending, control, entry, attemptId, now } = input;
     const tx = pending.transaction;
+    input.settled.push({ tx, settledReferenceId: input.settledReferenceId });
     scope.transactions.resolve(tx, control, now);
     if (entry && wallet) {
       scope.wallets.update(wallet);

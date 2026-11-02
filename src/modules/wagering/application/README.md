@@ -6,11 +6,12 @@ Use cases e portas. Não importa MikroORM, AWS SDK, pino nem `infra/` (o lint ga
 
 | Arquivo | O que é | Regras |
 |---|---|---|
-| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela e o `now()` dela), repositórios (inclusive `lockById` da wallet, as buscas de transação e, para o worker, `lockPending`, `resolve`, `reschedule` e `nudgeDependents`), `PendingQueue` (claim com dono), `OutboxWriter`, `InboxRepository` (registro da inbox na transação do use case), `AuditedEventRepository` (a última versão por wallet e tipo e o `INSERT` do auditor, D20.1), `IdGenerator`, `ReconciliationMetrics`, `ReconciliationLog`, `SubmissionMetrics` (duplicatas por camada, inclusive `inbox`). Não há porta de relógio: todo horário gravado vem do `TransactionScope.now()` (D18.12). | CLAUDE.md, D3.7, D4.3, D4.4, D6.6, D7.2, D9, D16.6, D17.7, D18, D19.4 |
+| `ports.ts` | `UnitOfWork` (uma transação SQL por chamada, com os repositórios presos a ela e o `now()` dela), repositórios (inclusive `lockById` da wallet, as buscas de transação e, para o worker, `lockPending`, `resolve`, `reschedule` e `nudgeDependents`), `PendingQueue` (claim com dono), `OutboxWriter`, `InboxRepository` (registro da inbox na transação do use case), `AuditedEventRepository` (a última versão por wallet e tipo e o `INSERT` do auditor, D20.1), `IdGenerator`, `ReconciliationMetrics`, `ReconciliationLog`, `SubmissionMetrics` (duplicatas por camada, inclusive `inbox`), `TransactionMetrics` (estado gravado por status, kind e canal; retry da submissão; `refund_after_settlement`; tudo depois do commit, D22.2, D22.3, D22.8) e `isSettled` no repositório de transações (D22.8). Não há porta de relógio: todo horário gravado vem do `TransactionScope.now()` (D18.12). | CLAUDE.md, D3.7, D4.3, D4.4, D6.6, D7.2, D9, D16.6, D17.7, D18, D19.4 |
 | `open-wallet.use-case.ts` | Abre a wallet: wallet, `OPENING`, lançamento e eventos numa transação só. | R-09-02..05 · D6.2, D6.3, D9.4 |
 | `submit-wager-transaction.use-case.ts` | Submissão de transação: o mesmo use case para HTTP e fila (R-10-03). Com a fila, a inbox entra antes do lock da wallet. Lock da wallet, idempotência autoritativa, regras do domínio, `balance_after`, outbox, cutucada das pendentes que esperam uma transação que ficou terminal. | R-07-*, R-08-*, R-09-10..17, R-10-03, R-10-04 · D1, D3, D4.1, D4.4, D7.2, D17, D19.4 |
 | `resolve-pending-transaction.use-case.ts` | Uma tentativa do worker sobre uma `PENDING_REFERENCE` (`attempt`) e o registro de um erro dela (`recordError`). | R-07-13, R-07-20..22 · D4, D18 |
 | `pending-policy.ts` | Valores da D4.3/D18.2 e funções puras: backoff preso ao prazo, prazo esgotado, limite de erros. | D4.2, D4.3, D18.1, D18.2, D18.5 |
+| `refund-after-settlement.ts` | `settledReferenceOf`: um `REFUND` **aplicado** cuja `BET` já tem `WIN`/`LOSS` `PROCESSED` (consulta o banco só nesse caso, sob o lock). Só observação: não muda a decisão. O mesmo na submissão e no worker. | D1.7, D22.8 |
 | `transaction-events.ts` | `eventsForTransition`: os eventos de uma transação que acabou de mudar de estado, o mesmo na submissão e no worker. | D4.6, D9.4 |
 | `payload-hash.ts` | `canonicalJson`, `payloadHash`, `inboxHash` (algoritmo abaixo) e `envelopeHash` (SHA-256 do JSON canônico do envelope inteiro, a inbox do auditor). | R-09-14 · D3.3, D3.8, D20.1 |
 | `audit-integration-event.use-case.ts` | O efeito do `event-auditor`, numa transação: inbox por `eventId` (duplicata → nada; outro conteúdo → `InboxConflictError`), checagem de ordem por (wallet, tipo de evento) e a linha em `audited_events`, gravada mesmo fora de ordem. Detalhe no [README da mensageria](../infra/messaging/README.md#auditor-r-11-03-d97-d201-d202). | R-11-03 · D9.7, D20.1 |
@@ -101,6 +102,15 @@ O worker ([`infra/workers/README.md`](../infra/workers/README.md)) pega um lote 
 
 Relógio: prazo, backoff, `processed_at` e eventos usam o `now()` da transação no banco (D18.12), o mesmo relógio do claim e da cutucada.
 
+## Métricas e o REFUND de BET liquidada (D1.7, D22)
+
+Os use cases contam pela porta `TransactionMetrics`, sempre **depois** do commit (uma transação desfeita não conta):
+- o estado gravado, por `status`, `kind` e `channel` (D22.2): a submissão sem inbox é `http`, com inbox é `sqs`; o worker, `worker`; a `OPENING`, `http`. Replay não conta (já está em `wagering_duplicates_total`, D17.7);
+- a repetição da D3.6 depois de um `UNIQUE` conta um retry de `submission` (D22.3);
+- um `REFUND` aplicado a uma `BET` **liquidada** (existe `WIN` ou `LOSS` `PROCESSED` com `reference_transaction_id` = a `BET`) dispara `refund_after_settlement`: contador e log `warn` só com ids. Não bloqueia (D1.7, D22.8). **Limitação:** um `WIN`/`LOSS` sem referência (D1.6) não marca a `BET` como liquidada; o `ROLLBACK` não conta (a D1.7 cita só o `REFUND`).
+
+O adaptador `prom-client` fica em `infra/observability/transaction-metrics.ts`; as métricas estão em [`shared/metrics`](../../../shared/metrics/README.md).
+
 ## payloadHash (R-09-14, D3.3)
 
 SHA-256, em hex, do **JSON canônico** destes campos: `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money` e `referenceExternalTransactionId` (omitido se ausente).
@@ -126,6 +136,8 @@ O cálculo é puro, no domínio (`domain/wallet-reconciliation.ts`): Σ crédito
 | Arquivo | Prova |
 |---|---|
 | `test/unit/application/ledger-cursor.spec.ts` | ida e volta do cursor; cursores inválidos |
+| `test/unit/application/transaction-metrics.spec.ts` | a submissão conta depois do commit, com `http` ou `sqs`; replay e commit que falha não contam; a repetição da D3.6 conta um retry; `refund_after_settlement` só para `REFUND` aplicado a `BET` liquidada (D22.2, D22.3, D22.8) |
+| `test/unit/application/resolve-pending-metrics.spec.ts` | o worker conta `PROCESSED` e `FAILED` com `worker`; reagendada e commit que falha não contam; `refund_after_settlement` com `worker` (D22.2, D22.8) |
 | `test/unit/application/payload-hash.spec.ts` | vetor fixo do §9; chaves ordenadas em todos os níveis; ordem dos campos não importa (propriedade); `"25"` = `"25.00"`; cada campo de negócio muda o hash; key e metadados não |
 | `test/unit/application/submit-wager-transaction.spec.ts` | barreira do `UNIQUE` com `UnitOfWork` em memória: a repetição vê a vencedora → replay, `unique_index` contado uma vez; bate de novo → `ConcurrentSubmissionError` (transitório, D17.6), sem 3ª tentativa; replay rápido conta `fast_path`; `createdAt`, `processedAt` e eventos com o `now()` do scope (D18.12) |
 | `test/unit/application/submit-inbox.spec.ts` | com a inbox: registro antes do lock da wallet, sem checagem rápida; hash da inbox (muda com o `type`, não com a key); duplicata sem lock, contada em `inbox`; conflito → `InboxConflictError`; o `UNIQUE` barra o commit → a repetição da D3.6 começa de novo pela inbox (provado por mutação: sem a inbox na 2ª chamada, falha); sem inbox, o caminho do HTTP |

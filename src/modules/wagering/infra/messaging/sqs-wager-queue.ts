@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
+  type GetQueueAttributesCommandOutput,
   type Message,
   type MessageAttributeValue,
   ReceiveMessageCommand,
@@ -14,7 +16,8 @@ export type SqsCommand =
   | ReceiveMessageCommand
   | DeleteMessageCommand
   | ChangeMessageVisibilityCommand
-  | SendMessageCommand;
+  | SendMessageCommand
+  | GetQueueAttributesCommand;
 
 /** Opções por chamada do SDK: o receive passa o prazo do long poll (D21.12). */
 export interface SqsSendOptions {
@@ -134,6 +137,19 @@ export class SqsWagerQueue {
     } catch (error) {
       throw new DeadLetterDeleteError(error);
     }
+  }
+
+  /**
+   * `ApproximateNumberOfMessages` da DLQ, para o gauge `sqs_dlq_depth`
+   * (D22.4). Conta as cópias do consumidor e o que o redrive do SQS moveu.
+   */
+  async dlqDepth(): Promise<number> {
+    const output = (await this.client.send(
+      new GetQueueAttributesCommand({ QueueUrl: this.urls.dlqUrl, AttributeNames: ["ApproximateNumberOfMessages"] }),
+    )) as GetQueueAttributesCommandOutput;
+    const raw = output.Attributes?.ApproximateNumberOfMessages ?? "0";
+    if (!/^\d+$/.test(raw)) throw new Error("ApproximateNumberOfMessages fora do formato");
+    return Number(raw);
   }
 }
 

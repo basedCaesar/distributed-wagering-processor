@@ -28,6 +28,7 @@ export function loadConfig(
       },
     },
     healthCheckTimeoutMs: env.HEALTH_CHECK_TIMEOUT_MS,
+    metricsPort: env.METRICS_PORT,
     outbox: {
       leaseMs: env.OUTBOX_LEASE_MS,
       snsRequestTimeoutMs: env.OUTBOX_SNS_REQUEST_TIMEOUT_MS,

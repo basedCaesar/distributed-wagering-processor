@@ -32,6 +32,8 @@ export interface TestProcess {
   instance: string;
   /** Só na `api`: a porta livre que ela escuta. */
   baseUrl: string | undefined;
+  /** O servidor de `/metrics` do processo, numa porta livre própria (D22.1). */
+  metricsUrl: string;
   /** Linhas de stdout e stderr, na ordem em que chegaram. */
   lines: string[];
   /** O processo saiu (por kill ou sozinho). */
@@ -105,10 +107,13 @@ export async function waitFor(
  */
 export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Promise<TestProcess> {
   const port = kind === "api" ? await freePort() : undefined;
+  // Cada processo com a sua porta de métricas: vários no mesmo host não colidem (D22.1).
+  const metricsPort = await freePort();
   const entrypoint = options.entrypoint ?? join("src", "entrypoints", `main-${kind}.ts`);
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     DB_APPLICATION_NAME: options.instance,
+    METRICS_PORT: String(metricsPort),
     ...(port !== undefined && { PORT: String(port) }),
     ...options.env,
   };
@@ -161,6 +166,7 @@ export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Pr
     kind,
     instance: options.instance,
     baseUrl: port === undefined ? undefined : `http://127.0.0.1:${port}`,
+    metricsUrl: `http://127.0.0.1:${metricsPort}`,
     lines,
     get exited() {
       return exited;

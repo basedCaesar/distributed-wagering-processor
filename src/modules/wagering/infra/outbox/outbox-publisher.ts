@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { classifyError } from "../../../../shared/errors/classify-error";
 import { runWithContext } from "../../../../shared/logger/request-context";
+import { wageringRetriesTotal } from "../../../../shared/metrics/metrics";
 import { OUTBOX_POLICY, type OutboxPolicy, outboxBackoffSeconds, stalled } from "./outbox-policy";
 
 /** Evento pego pelo claim: a cabeça não publicada de uma wallet (D20.3). */
@@ -168,6 +169,8 @@ export class OutboxPublisher {
       this.logger.warn(fields, "falha de publicação com lease de outro publisher; nada registrado");
       return;
     }
+    // Falha registrada com backoff: um retry do publisher (D22.3).
+    wageringRetriesTotal.inc({ component: "outbox_publisher" });
     if (stalled(attempts, this.policy.alertAfterAttempts)) {
       this.alerts.countStalled();
       this.logger.error(

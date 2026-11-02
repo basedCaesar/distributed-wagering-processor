@@ -15,6 +15,8 @@ import {
   type ReconciliationMetrics,
   SUBMISSION_METRICS,
   type SubmissionMetrics,
+  TRANSACTION_METRICS,
+  type TransactionMetrics,
   UNIT_OF_WORK,
   type UnitOfWork,
 } from "../application/ports";
@@ -29,6 +31,7 @@ import {
   PromReconciliationMetrics,
 } from "./observability/reconciliation-reporting";
 import { PromSubmissionMetrics } from "./observability/submission-metrics";
+import { PromTransactionMetrics } from "./observability/transaction-metrics";
 import { WageringCoreModule } from "./wagering-core.module";
 
 /**
@@ -49,9 +52,15 @@ import { WageringCoreModule } from "./wagering-core.module";
       inject: [LOGGER],
     },
     {
+      provide: TRANSACTION_METRICS,
+      useFactory: (logger: Logger) => new PromTransactionMetrics(logger),
+      inject: [LOGGER],
+    },
+    {
       provide: OpenWalletUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator) => new OpenWalletUseCase(uow, ids),
-      inject: [UNIT_OF_WORK, ID_GENERATOR],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator, metrics: TransactionMetrics) =>
+        new OpenWalletUseCase(uow, ids, metrics),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, TRANSACTION_METRICS],
     },
     {
       provide: WalletQueries,
@@ -64,9 +73,13 @@ import { WageringCoreModule } from "./wagering-core.module";
     },
     {
       provide: SubmitWagerTransactionUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator, metrics: SubmissionMetrics) =>
-        new SubmitWagerTransactionUseCase(uow, ids, metrics),
-      inject: [UNIT_OF_WORK, ID_GENERATOR, SUBMISSION_METRICS],
+      useFactory: (
+        uow: UnitOfWork,
+        ids: IdGenerator,
+        metrics: SubmissionMetrics,
+        transactionMetrics: TransactionMetrics,
+      ) => new SubmitWagerTransactionUseCase(uow, ids, metrics, transactionMetrics),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, SUBMISSION_METRICS, TRANSACTION_METRICS],
     },
     {
       provide: TransactionQueries,

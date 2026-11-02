@@ -7,10 +7,13 @@ import {
   type MessageOutcome,
   WagerTransactionsConsumer,
 } from "../../src/modules/wagering/infra/messaging/wager-transactions-consumer";
+import { PromSubmissionMetrics } from "../../src/modules/wagering/infra/observability/submission-metrics";
+import { PromTransactionMetrics } from "../../src/modules/wagering/infra/observability/transaction-metrics";
 import { WAGERING_ENTITIES } from "../../src/modules/wagering/infra/persistence";
 import { MikroOrmMessageAttempts } from "../../src/modules/wagering/infra/persistence/message-attempts";
 import { MikroOrmUnitOfWork } from "../../src/modules/wagering/infra/persistence/mikro-orm-unit-of-work";
 import { logger } from "../../src/shared/logger/logger";
+import { wageringDuplicatesTotal } from "../../src/shared/metrics/metrics";
 import { createOrm } from "../../src/shared/orm/create-orm";
 import type { DatabaseCredentials } from "../../src/shared/secrets/secrets-provider.port";
 import { credentialsFor, withClient } from "./db";
@@ -61,10 +64,18 @@ export async function startTestConsumer(
   const base = new MikroOrmUnitOfWork(orm);
   const uow = options.wrapUow ? options.wrapUow(base) : base;
   const counted: DuplicateLayer[] = [];
+  const duplicates = new PromSubmissionMetrics(wageringDuplicatesTotal);
+  // As métricas de produção (D22): os testes de observabilidade leem o registry do processo.
   const useCase = new SubmitWagerTransactionUseCase(
     uow,
     { next: () => Bun.randomUUIDv7() },
-    { countDuplicate: (layer) => counted.push(layer) },
+    {
+      countDuplicate: (layer) => {
+        counted.push(layer);
+        duplicates.countDuplicate(layer);
+      },
+    },
+    new PromTransactionMetrics(logger),
   );
   const client = testSqsClient();
   const sender = options.wrapSqs ? options.wrapSqs(client) : client;

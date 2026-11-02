@@ -25,15 +25,16 @@ export class HttpErrorFilter implements ExceptionFilter {
     const response = host.switchToHttp().getResponse<Response>();
 
     if (classified.category === "internal" || classified.category === "transient") {
-      // Só identificação do erro: nunca o payload nem o `detail` do banco,
-      // que pode trazer valores (D11.1).
-      const { name, code, constraint } = (error ?? {}) as {
-        name?: string;
-        code?: string;
-        constraint?: string;
-      };
+      // Só a identificação do erro, já conferida pelo `classifyError()`:
+      // nunca a mensagem, o `detail` nem a query do banco (D11.1, D22.9 e).
       this.logger[classified.category === "internal" ? "error" : "warn"](
-        { errorName: name, code, constraint, category: classified.category },
+        {
+          errorName: error instanceof Error ? error.constructor.name : typeof error,
+          code: classified.db?.sqlState ?? classified.code,
+          constraint: classified.db?.constraint,
+          table: classified.db?.table,
+          category: classified.category,
+        },
         "requisição falhou",
       );
     }

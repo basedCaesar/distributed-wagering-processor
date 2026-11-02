@@ -7,18 +7,29 @@ import { LOGGER } from "../../../../shared/logger/logger.module";
 import { wageringDuplicatesTotal } from "../../../../shared/metrics/metrics";
 import { ID_GENERATOR, type IdGenerator, UNIT_OF_WORK, type UnitOfWork } from "../../application/ports";
 import { SubmitWagerTransactionUseCase } from "../../application/submit-wager-transaction.use-case";
+import { trackDlqDepth } from "../observability/gauges";
 import { PromSubmissionMetrics } from "../observability/submission-metrics";
+import { PromTransactionMetrics } from "../observability/transaction-metrics";
 import { MikroOrmMessageAttempts } from "../persistence/message-attempts";
 import { WageringCoreModule } from "../wagering-core.module";
 import { SqsWagerQueue } from "./sqs-wager-queue";
 import { WagerTransactionsConsumer } from "./wager-transactions-consumer";
 
-/** Para o consumidor antes de o ORM fechar (D8.5). */
+/** A fila de transações e a DLQ dela (R-10-01): o consumidor e o gauge de profundidade (D22.4). */
+const WAGER_QUEUE = Symbol("WAGER_QUEUE");
+/** Desfaz o registro do `sqs_dlq_depth` no shutdown. */
+const DLQ_DEPTH_TRACKING = Symbol("DLQ_DEPTH_TRACKING");
+
+/** Para o consumidor antes de o ORM fechar (D8.5) e tira o gauge da DLQ. */
 class ConsumerShutdown implements OnModuleDestroy {
-  constructor(@Inject(WagerTransactionsConsumer) private readonly consumer: WagerTransactionsConsumer) {}
+  constructor(
+    @Inject(WagerTransactionsConsumer) private readonly consumer: WagerTransactionsConsumer,
+    @Inject(DLQ_DEPTH_TRACKING) private readonly untrack: () => void,
+  ) {}
 
   async onModuleDestroy(): Promise<void> {
     await this.consumer.stop();
+    this.untrack();
   }
 }
 
@@ -28,24 +39,42 @@ class ConsumerShutdown implements OnModuleDestroy {
   providers: [
     {
       provide: SubmitWagerTransactionUseCase,
-      useFactory: (uow: UnitOfWork, ids: IdGenerator) =>
-        new SubmitWagerTransactionUseCase(uow, ids, new PromSubmissionMetrics(wageringDuplicatesTotal)),
-      inject: [UNIT_OF_WORK, ID_GENERATOR],
+      useFactory: (uow: UnitOfWork, ids: IdGenerator, logger: Logger) =>
+        new SubmitWagerTransactionUseCase(
+          uow,
+          ids,
+          new PromSubmissionMetrics(wageringDuplicatesTotal),
+          new PromTransactionMetrics(logger),
+        ),
+      inject: [UNIT_OF_WORK, ID_GENERATOR, LOGGER],
+    },
+    {
+      provide: WAGER_QUEUE,
+      useFactory: async (config: AppConfig) => {
+        const client = createSqsClient(config.aws);
+        return new SqsWagerQueue(client, {
+          queueUrl: await queueUrlOf(client, config.aws.queues.wagerTransactions),
+          dlqUrl: await queueUrlOf(client, config.aws.queues.wagerTransactionsDlq),
+        });
+      },
+      inject: [APP_CONFIG],
+    },
+    {
+      provide: DLQ_DEPTH_TRACKING,
+      useFactory: (queue: SqsWagerQueue, logger: Logger, config: AppConfig) =>
+        trackDlqDepth("wager_transactions_dlq", queue, logger, config.healthCheckTimeoutMs),
+      inject: [WAGER_QUEUE, LOGGER, APP_CONFIG],
     },
     {
       provide: WagerTransactionsConsumer,
-      useFactory: async (
+      useFactory: (
         config: AppConfig,
         orm: MikroORM,
         submit: SubmitWagerTransactionUseCase,
         logger: Logger,
-      ) => {
-        const client = createSqsClient(config.aws);
-        const queue = new SqsWagerQueue(client, {
-          queueUrl: await queueUrlOf(client, config.aws.queues.wagerTransactions),
-          dlqUrl: await queueUrlOf(client, config.aws.queues.wagerTransactionsDlq),
-        });
-        return new WagerTransactionsConsumer(
+        queue: SqsWagerQueue,
+      ) =>
+        new WagerTransactionsConsumer(
           {
             queue,
             submit,
@@ -58,9 +87,8 @@ class ConsumerShutdown implements OnModuleDestroy {
             visibilityTimeoutSeconds: config.consumer.visibilityTimeoutSeconds,
             maxMessages: config.consumer.maxMessages,
           },
-        );
-      },
-      inject: [APP_CONFIG, MikroORM, SubmitWagerTransactionUseCase, LOGGER],
+        ),
+      inject: [APP_CONFIG, MikroORM, SubmitWagerTransactionUseCase, LOGGER, WAGER_QUEUE],
     },
     ConsumerShutdown,
   ],

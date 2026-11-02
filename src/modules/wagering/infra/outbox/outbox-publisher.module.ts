@@ -6,16 +6,26 @@ import { createSnsClient, topicArnOf } from "../../../../shared/aws/sns-client";
 import { APP_CONFIG, type AppConfig } from "../../../../shared/config/config.module";
 import { LOGGER } from "../../../../shared/logger/logger.module";
 import { outboxEventsStalledTotal } from "../../../../shared/metrics/metrics";
+import { trackOutboxBacklog } from "../observability/gauges";
 import { MikroOrmOutboxStore } from "../persistence/outbox-store";
 import { OutboxPublisher } from "./outbox-publisher";
 import { SnsEventPublisher, type SnsSender } from "./sns-event-publisher";
 
-/** Para o publisher antes de o ORM fechar (D8.6). */
+/** A outbox vista pelo publisher: o claim e os gauges de atraso (D22.6). */
+const OUTBOX_STORE = Symbol("OUTBOX_STORE");
+/** Desfaz o registro dos gauges da outbox no shutdown. */
+const OUTBOX_BACKLOG_TRACKING = Symbol("OUTBOX_BACKLOG_TRACKING");
+
+/** Para o publisher antes de o ORM fechar (D8.6) e tira os gauges da outbox. */
 class OutboxPublisherShutdown implements OnModuleDestroy {
-  constructor(@Inject(OutboxPublisher) private readonly publisher: OutboxPublisher) {}
+  constructor(
+    @Inject(OutboxPublisher) private readonly publisher: OutboxPublisher,
+    @Inject(OUTBOX_BACKLOG_TRACKING) private readonly untrack: () => void,
+  ) {}
 
   async onModuleDestroy(): Promise<void> {
     await this.publisher.stop();
+    this.untrack();
   }
 }
 
@@ -31,7 +41,8 @@ export const SNS_SENDER = Symbol("SNS_SENDER");
 /**
  * Contexto `wagering` no processo `outbox-publisher` (D7.4, D9.6). O
  * cliente SNS tem o timeout menor que o lease, validado na config (D20.5);
- * o ARN do tópico é resolvido pelo nome na subida (D20.9).
+ * o ARN do tópico é resolvido pelo nome na subida (D20.9). Os gauges de
+ * pendentes e lag são lidos no scrape (D22.6).
  */
 @Module({
   providers: [
@@ -43,18 +54,35 @@ export const SNS_SENDER = Symbol("SNS_SENDER");
     },
     { provide: SNS_SENDER, useExisting: SNS_CLIENT },
     {
+      provide: OUTBOX_STORE,
+      useFactory: (orm: MikroORM) => new MikroOrmOutboxStore(orm),
+      inject: [MikroORM],
+    },
+    {
+      provide: OUTBOX_BACKLOG_TRACKING,
+      useFactory: (store: MikroOrmOutboxStore, logger: Logger, config: AppConfig) =>
+        trackOutboxBacklog(store, logger, config.healthCheckTimeoutMs),
+      inject: [OUTBOX_STORE, LOGGER, APP_CONFIG],
+    },
+    {
       provide: OutboxPublisher,
-      useFactory: async (config: AppConfig, orm: MikroORM, logger: Logger, client: SNSClient, sender: SnsSender) => {
+      useFactory: async (
+        config: AppConfig,
+        store: MikroOrmOutboxStore,
+        logger: Logger,
+        client: SNSClient,
+        sender: SnsSender,
+      ) => {
         const topicArn = await topicArnOf(client, config.aws.sns.wageringEventsTopic);
         return new OutboxPublisher(
-          new MikroOrmOutboxStore(orm),
+          store,
           new SnsEventPublisher(sender, topicArn),
           logger,
           { countStalled: () => outboxEventsStalledTotal.inc() },
           { leaseMs: config.outbox.leaseMs },
         );
       },
-      inject: [APP_CONFIG, MikroORM, LOGGER, SNS_CLIENT, SNS_SENDER],
+      inject: [APP_CONFIG, OUTBOX_STORE, LOGGER, SNS_CLIENT, SNS_SENDER],
     },
     OutboxPublisherShutdown,
   ],
