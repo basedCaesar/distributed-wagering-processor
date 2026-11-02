@@ -59,7 +59,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 - infraestrutura separada para os testes;
 - `/health/live` e `/health/ready`;
 - `bun run check`;
-- esqueleto de `scripts/acceptance.sh`.
+- esqueleto de `scripts/acceptance.ts` (era `.sh`; trocado pela D23.2).
 
 **Cobre:** R-04-01..07, R-09-20..22, R-12-04 · D2.5, D11.3, D12.3
 
@@ -277,7 +277,7 @@ Se atrasar, os extras encolhem. O núcleo não.
 - teste e2e com o token real;
 - `README.md`: setup, comandos, como pegar o token, os `curl` do §9 e o `send-message` do §10;
 - `ARCHITECTURE.md` com tudo o que a D11.5 lista, mais as interpretações (D1.6) e as limitações;
-- `scripts/acceptance.sh` completo.
+- `scripts/acceptance.ts` completo (D23.2).
 
 **Contratos da S3:** o `AUTH_ISSUER` do Compose (hoje `http://keycloak:8080/realms/wagering`) precisa bater com o emissor (`iss`) que vem no token do Keycloak, que depende do host usado para pedir o token; senão toda requisição dá `401` (D10.1, D16.1). O `prom-client` aparece como deprecated no install (substituído por `@prometheus-io/client`): avaliar na S9, junto com o `/metrics` (D11.2, D16.6).
 

@@ -20,8 +20,16 @@ Autenticação por JWT de um IdP externo (R-02-03, D10.1). O ponto de extensão 
 - Health e `/docs` são abertos (R-02-06, D13.2). A fila não tem auth (R-02-07).
 - O token nunca é logado (D11.1).
 
-O container do Keycloak entra na S10 (D10.4). Até lá, as variáveis do Compose apontam para onde ele vai ficar.
+## Keycloak (S10, D23)
+
+O emissor real é o Keycloak do Compose, com o realm `wagering` ([`keycloak/README.md`](../../../keycloak/README.md)): um client por provedor e um `operator`, todos por `client_credentials`.
+- `AUTH_ISSUER=http://localhost:8080/realms/wagering`: emissor fixo pelo `KC_HOSTNAME`, o mesmo qualquer que seja o host usado para pedir o token.
+- `AUTH_JWKS_URL`: pela rede interna (`http://keycloak:8080/…/certs`, D23.3).
+
+Como pegar o token: [README da raiz](../../../README.md#token-keycloak-d101-d23).
 
 ## Testes
 
-`test/integration/auth/auth.spec.ts`; os três casos do JWKS indisponível em `test/integration/auth/jwks-unavailable.spec.ts`.
+- `test/integration/auth/auth.spec.ts`;
+- os três casos do JWKS indisponível em `test/integration/auth/jwks-unavailable.spec.ts`;
+- e2e com tokens reais do Keycloak de teste em `test/e2e/keycloak.spec.ts` (D10.3, D23.5).

@@ -5,9 +5,11 @@
 | `unit/` | `bun run test:unit` | nada externo (domínio, políticas, config, `classifyError`, remoção segura das provas) |
 | `integration/` | `bun run test:integration` | Postgres e LocalStack **reais** (`bun run infra:test:up`), com o papel da app; alguns também o Docker direto |
 | `concurrency/` | `bun run test:concurrency` | o mesmo, com paralelismo real e processos Bun separados |
+| `e2e/` | `bun run test:e2e` | o Keycloak **real** do Compose de teste (porta 8081, `E2E_KEYCLOAK_URL`): tokens por `client_credentials` contra a api no processo (D10.3, D23.5) |
 | provas | `bun run test:proofs` | cópia do repositório e banco descartável (`proofs/README.md`, D21.8) |
+| aceitação | `bun run acceptance` | o Compose de dev inteiro (`bun run infra:up`): os exemplos do §9 e do §10, literais (D23.2, D23.6) |
 
-`bun run check` roda typecheck, lint, unidade, `migration:verify`, integração e concorrência. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
+`bun run check` roda typecheck, lint, unidade, `migration:verify`, integração, concorrência e e2e. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
 
 ## Regras (CLAUDE.md, D11.4)
 

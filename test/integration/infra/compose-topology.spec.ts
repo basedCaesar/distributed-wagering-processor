@@ -31,10 +31,11 @@ const TOPOLOGY: Record<string, number> = {
 const SHELLS = ["sh", "bash", "/bin/sh", "/bin/bash", "ash", "/bin/ash"];
 
 let services: Record<string, ComposeService>;
+let testServices: Record<string, ComposeService>;
 
 /** O Compose como o Docker o interpreta (`docker compose config`), não o texto do YAML. */
-beforeAll(async () => {
-  const proc = Bun.spawn(["docker", "compose", "-f", "docker-compose.yml", "config", "--format", "json"], {
+async function composeConfig(file: string): Promise<Record<string, ComposeService>> {
+  const proc = Bun.spawn(["docker", "compose", "-f", file, "config", "--format", "json"], {
     cwd: REPO_ROOT,
     stdout: "pipe",
     stderr: "pipe",
@@ -45,7 +46,12 @@ beforeAll(async () => {
     proc.exited,
   ]);
   if (code !== 0) throw new Error(`docker compose config falhou: ${err}`);
-  services = (JSON.parse(out) as { services: Record<string, ComposeService> }).services;
+  return (JSON.parse(out) as { services: Record<string, ComposeService> }).services;
+}
+
+beforeAll(async () => {
+  services = await composeConfig("docker-compose.yml");
+  testServices = await composeConfig("docker-compose.test.yml");
 });
 
 /** Serviços que rodam um entrypoint da D7.4. */
@@ -134,5 +140,48 @@ describe("D7.4 D21.2: topologia do Compose", () => {
         shell: false,
       });
     }
+  });
+});
+
+describe("D23: Keycloak e seed no Compose", () => {
+  it("D23.3 D10.1: AUTH_ISSUER das 3 api = KC_HOSTNAME do keycloak + /realms/wagering; JWKS pela rede interna", () => {
+    const hostname = services.keycloak?.environment?.KC_HOSTNAME;
+    expect(hostname).toBe("http://localhost:8080");
+    expect(services.keycloak?.environment?.KC_HOSTNAME_BACKCHANNEL_DYNAMIC).toBe("true");
+    const apis = processServices().filter(([, , entry]) => entry === "main-api.ts");
+    expect(apis.length).toBe(3);
+    for (const [name, service] of apis) {
+      const env = service.environment ?? {};
+      expect({ name, issuer: env.AUTH_ISSUER, jwks: env.AUTH_JWKS_URL }).toEqual({
+        name,
+        issuer: `${hostname}/realms/wagering`,
+        jwks: "http://keycloak:8080/realms/wagering/protocol/openid-connect/certs",
+      });
+    }
+  });
+
+  it("D23.3 D23.4: o keycloak publica a 8080 e importa o realm do repositório; imagem com versão exata da linha 26", () => {
+    const keycloak = services.keycloak;
+    expect(keycloak?.ports?.map((p) => String(p.published))).toEqual(["8080"]);
+    expect(keycloak?.image ?? "").toMatch(/^quay\.io\/keycloak\/keycloak:26\.\d+\.\d+$/);
+    expect(keycloak?.command ?? []).toContain("--import-realm");
+    expect(keycloak?.volumes?.map((v) => v.target)).toContain("/opt/keycloak/data/import/realm-wagering.json");
+  });
+
+  it("D23.1: o seed roda o script do exemplo depois do migrate, só no Compose de dev", () => {
+    const seed = services.seed;
+    expect(seed?.command).toEqual(["scripts/seed-examples.ts"]);
+    expect(Object.keys(seed?.depends_on ?? {})).toContain("migrate");
+    expect(testServices.seed).toBeUndefined();
+  });
+
+  it("D23.3 D23.5: o Keycloak de teste publica a 8081 com KC_HOSTNAME = E2E_KEYCLOAK_URL do .env.test", async () => {
+    const keycloak = testServices.keycloak_test;
+    expect(keycloak?.ports?.map((p) => String(p.published))).toEqual(["8081"]);
+    const envTest = await readFile(join(REPO_ROOT, ".env.test"), "utf8");
+    const url = /^E2E_KEYCLOAK_URL=(.+)$/m.exec(envTest)?.[1]?.trim();
+    expect(url).toBe("http://localhost:8081");
+    expect(keycloak?.environment?.KC_HOSTNAME).toBe(url);
+    expect(keycloak?.image).toBe(services.keycloak?.image);
   });
 });

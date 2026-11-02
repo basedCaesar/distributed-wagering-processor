@@ -56,7 +56,7 @@ src/modules/<contexto>/
 migrations/
 test/{unit,integration,concurrency,e2e}/
 proofs/                      patches que removem uma proteção
-scripts/acceptance.sh        roda os exemplos do §9 e do §10 literalmente
+scripts/acceptance.ts        roda os exemplos do §9 e do §10 literalmente (D23.2)
 ```
 
 ## Regras invioláveis

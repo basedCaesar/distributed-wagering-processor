@@ -4,7 +4,7 @@ import { Test } from "@nestjs/testing";
 import pino from "pino";
 import { ApiModule } from "../../src/app/api.module";
 import { configureApiApp } from "../../src/app/configure-api-app";
-import { AUTH_CONFIG } from "../../src/shared/auth/auth.config";
+import { AUTH_CONFIG, type AuthConfig } from "../../src/shared/auth/auth.config";
 import { logger } from "../../src/shared/logger/logger";
 import { type JwksBehavior, startTestIssuer, type TestIssuer } from "./auth";
 
@@ -27,6 +27,11 @@ export interface TestApiOptions {
   jwks?: JwksBehavior;
   /** Provedores trocados, para forçar caminhos de erro (ex.: um `500`). */
   overrides?: { provide: unknown; useValue: unknown }[];
+  /**
+   * Emissor real no lugar do emissor de teste (o Keycloak do e2e, D23.5).
+   * O emissor de teste continua de pé para o `request` sem token explícito.
+   */
+  auth?: AuthConfig;
 }
 
 /**
@@ -66,7 +71,7 @@ export async function startTestApi(options: TestApiOptions = {}): Promise<TestAp
 
   let builder = Test.createTestingModule({ imports: [ApiModule] })
     .overrideProvider(AUTH_CONFIG)
-    .useValue(issuer.config);
+    .useValue(options.auth ?? issuer.config);
   for (const override of options.overrides ?? []) {
     builder = builder.overrideProvider(override.provide).useValue(override.useValue);
   }

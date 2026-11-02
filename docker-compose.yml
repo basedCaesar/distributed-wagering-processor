@@ -43,11 +43,24 @@ x-app-env: &app-env
 x-api: &api
   <<: *app
   command: ["src/entrypoints/main-api.ts"]
+  # A api sobe com a wallet do exemplo já criada (D23.1) e o Keycloak de pé.
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    seed:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+    keycloak:
+      condition: service_healthy
 
 x-api-env: &api-env
   <<: *app-env
-  # D10.1: o container do Keycloak entra na S10 (D10.4).
-  AUTH_ISSUER: http://keycloak:8080/realms/wagering
+  # D10.1, D23.3: o emissor é o KC_HOSTNAME do Keycloak (o mesmo `iss` qualquer
+  # que seja o host usado para pedir o token); o JWKS vem pela rede interna.
+  AUTH_ISSUER: http://localhost:8080/realms/wagering
   AUTH_AUDIENCE: wagering-api
   AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
 
@@ -103,6 +116,52 @@ services:
       DB_PASSWORD: wagering_app
       DB_MIGRATION_USER: wagering_owner
       DB_MIGRATION_PASSWORD: wagering_owner
+
+  # One-shot: cria a wallet do exemplo do §9/§10 pelo use case real (D23.1).
+  # Só no Compose de dev; com a wallet já criada, não faz nada.
+  seed:
+    image: wagering-app:local
+    build: .
+    command: ["scripts/seed-examples.ts"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: wagering
+      DB_USER: wagering_app
+      DB_PASSWORD: wagering_app
+      DB_APPLICATION_NAME: seed
+
+  # IdP externo (R-02-03, D10.1). Realm importado do repositório (D23.4).
+  # Admin e segredos dos clients são de desenvolvimento, não segredos reais.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Emissor fixo (D23.3): o `iss` é sempre este, e as chamadas internas
+      # (keycloak:8080, o JWKS da api) usam o host da própria requisição.
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realm-wagering.json:/opt/keycloak/data/import/realm-wagering.json:ro
+    # A imagem não tem curl: o /health/ready (porta de gestão 9000) via /dev/tcp do bash.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
 
   # Única porta da api para fora: os `curl` do §9 vão para localhost:3000.
   nginx:
