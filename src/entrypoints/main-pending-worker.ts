@@ -14,8 +14,10 @@ async function bootstrap() {
     logger: false,
   });
   app.enableShutdownHooks(["SIGTERM", "SIGINT"]);
-  app.get(PendingWorker).start();
-  logger.info("pending-worker iniciado");
+  const worker = app.get(PendingWorker);
+  worker.start();
+  // O dono dos leases (D18.10): liga o `locked_by` das pendentes a esta instância.
+  logger.info({ leaseToken: worker.leaseToken }, "pending-worker iniciado");
 }
 
 bootstrap().catch(exitOnBootstrapFailure("pending-worker"));

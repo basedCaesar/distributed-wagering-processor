@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { loadConfig } from "../../../src/shared/config/config";
 import { APP_CONFIG } from "../../../src/shared/config/config.module";
 import { startTestApi, type TestApi } from "../../support/api";
+import { withClient } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import { freePort } from "../../support/processes";
 import { brl, createWallet, submit, wagerBody } from "../../support/wagering";
@@ -24,6 +25,18 @@ describe("D5 B7.7 D21.7: a API não depende do SQS", () => {
     const response = await submit(api, wagerBody(wallet, { money: brl("10.00") }));
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("PROCESSED");
+
+    // O evento da transação está na outbox, gravado na mesma transação, e continua não publicado.
+    const events = await withClient("app", async (client) => {
+      const { rows } = await client.query<{ event_type: string; published: boolean }>(
+        `SELECT event_type, published_at IS NOT NULL AS published FROM outbox_messages
+          WHERE ordering_key = $1 AND payload->'data'->>'transactionId' = $2`,
+        [wallet.id, response.body.transactionId],
+      );
+      return rows;
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.filter((event) => event.published)).toEqual([]);
 
     const ready = await fetch(`${api.baseUrl}/health/ready`);
     expect(ready.status).toBe(503);

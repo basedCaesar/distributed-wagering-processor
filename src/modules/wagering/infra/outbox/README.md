@@ -9,9 +9,9 @@ Processo `outbox-publisher` (R-11-02, R-11-03, D9, D20). Lê `outbox_messages` e
 | `outbox-policy.ts` | Valores (lote de 50 cabeças, lease de 30 s, espera de 500 ms depois de um claim vazio, teto de 300 s, alerta a partir de 20 tentativas) e funções puras: backoff 2ⁿ s e "passou do limite". | D9.6, D20.3, D20.4 |
 | `outbox-publisher.ts` | O laço (`runOnce`, `start`, `stop`): claim, publicação do lote em paralelo, marcação só do que o SNS confirmou, falha gravada com backoff. Nunca descarta. | R-11-02 · D9.6, D20.3–20.5 |
 | `sns-event-publisher.ts` | `Publish` com o envelope como está no `jsonb`, `MessageGroupId = walletId`, `MessageDeduplicationId = eventId`. | D9.1, D20.9 |
-| `outbox-publisher.module.ts` | Cliente SNS com timeout menor que o lease, ARN do tópico pelo nome, o laço e o shutdown antes de o ORM fechar. | D7.4, D8.6, D20.5 |
+| `outbox-publisher.module.ts` | Cliente SNS com timeout menor que o lease (`SNS_CLIENT`), quem faz o `Publish` (`SNS_SENDER`, por padrão o próprio cliente; o teste de processos separados troca só ele, D21.4), ARN do tópico pelo nome, o laço e o shutdown antes de o ORM fechar. | D7.4, D8.6, D20.5, D21.4 |
 | `../persistence/outbox-store.ts` | O SQL: claim por cabeça de wallet, marcar como publicado e gravar a falha, os dois só para o dono do lease. | D9.2, D9.6, D20.3, D20.5 |
-| `../../../../shared/aws/sns-client.ts` | `createSnsClient` (`requestTimeout`, `maxAttempts: 1`) e `topicArnOf`. | D20.5, D20.9 |
+| `../../../../shared/aws/sns-client.ts` | `createSnsClient` (`requestTimeout` com `throwOnRequestTimeout`, `maxAttempts: 1`) e `topicArnOf`. | D20.5, D20.9 |
 
 ## Uma rodada
 
@@ -22,7 +22,7 @@ Processo `outbox-publisher` (R-11-02, R-11-03, D9, D20). Lê `outbox_messages` e
 
 Com algo pego, a próxima rodada sai na hora; claim vazio → espera de 500 ms. O `stop()` termina a rodada atual e interrompe a espera; os leases dos outros vencem sozinhos (D8.6).
 
-**Por que o timeout do SNS é menor que o lease (D20.5).** O cliente SNS tem `requestTimeout` de 10 s e uma tentativa por chamada (a repetição é do publisher). Pior caso de uma rodada: claim + publicação do lote em paralelo (≤ 10 s) + marcações (≤ 5 s de `statement_timeout`) ≈ 15 s, abaixo dos 30 s do lease. Com os 3 `maxAttempts` padrão do SDK, uma chamada lenta chegaria a 30 s, o lease venceria e outra instância publicaria de novo em condição normal. A config recusa `OUTBOX_SNS_REQUEST_TIMEOUT_MS >= OUTBOX_LEASE_MS`.
+**Por que o timeout do SNS é menor que o lease (D20.5).** O cliente SNS tem `requestTimeout` de 10 s e uma tentativa por chamada (a repetição é do publisher). Pior caso de uma rodada: claim + publicação do lote em paralelo (≤ 10 s) + marcações (≤ 5 s de `statement_timeout`) ≈ 15 s, abaixo dos 30 s do lease. Com os 3 `maxAttempts` padrão do SDK, uma chamada lenta chegaria a 30 s, o lease venceria e outra instância publicaria de novo em condição normal. A config recusa `OUTBOX_SNS_REQUEST_TIMEOUT_MS >= OUTBOX_LEASE_MS`. O cliente usa `throwOnRequestTimeout: true`: sem ele, o `@smithy/node-http-handler` só avisa quando o prazo estoura, e um SNS que aceita a conexão e não responde prendia o publisher para sempre (`test/integration/outbox/sns-timeout.spec.ts`). Cada instância loga o `leaseToken` na subida ("outbox-publisher iniciado"), o que liga um `locked_by` da outbox a ela.
 
 ## A outbox com queda do processo (R-11-03, D13.4)
 

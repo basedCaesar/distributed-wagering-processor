@@ -38,7 +38,7 @@ afterEach(async () => {
 });
 
 describe("R-13-C4 R-05-08 R-08-06 D7.4 D21.1: três ou mais processos sobre a mesma wallet", () => {
-  it("R-13-C4 R-05-08 R-08-06 D21.1: 3 api e 3 consumer em processos separados, carga simultânea na mesma wallet (waiters de 3 processos no pg_locks) → um efeito por key, saldo = ledger, version coerente", async () => {
+  it("R-13-C4 R-05-08 R-08-06 D21.1: 3 api e 3 consumer em processos separados, carga simultânea na mesma wallet (waiters das 3 api e de pelo menos 1 consumer no pg_locks) → um efeito por key, saldo = ledger, version coerente", async () => {
     const env = {
       ...authEnv(issuer),
       QUEUE_WAGER_TRANSACTIONS: queues.queueName,
@@ -75,13 +75,15 @@ describe("R-13-C4 R-05-08 R-08-06 D7.4 D21.1: três ou mais processos sobre a me
       await Promise.all(
         [repeatedMessage, ...queued].map((message) => sendMessage(queues.queueUrl, message.body, { groupId: newId() })),
       );
-      // Prazo abaixo do lock_timeout (2 s): os 3 processos esperando a mesma wallet ao mesmo tempo.
+      // Prazo abaixo do lock_timeout (2 s): as 3 api e pelo menos 1 consumer
+      // esperando a mesma wallet ao mesmo tempo, os dois canais em disputa
+      // entre processos (D21.1; achado 3 da revisão da S8).
       await waitFor(
         async () => {
           waiters = await walletLockWaiterApps(observer, lock);
-          return APIS.every((app) => waiters.includes(app));
+          return APIS.every((app) => waiters.includes(app)) && waiters.some((app) => CONSUMERS.includes(app));
         },
-        "waiters das 3 api no lock da wallet",
+        "waiters das 3 api e de pelo menos 1 consumer no lock da wallet",
         WAITERS_DEADLINE_MS,
       );
       await lock.release();
@@ -92,6 +94,7 @@ describe("R-13-C4 R-05-08 R-08-06 D7.4 D21.1: três ou mais processos sobre a me
     }
 
     expect(new Set(waiters.filter((app) => APIS.includes(app))).size).toBe(3);
+    expect(waiters.filter((app) => CONSUMERS.includes(app)).length).toBeGreaterThanOrEqual(1);
     expect(responses.map((r) => r.status)).toEqual(responses.map(() => 200));
     const [first, second] = responses.slice(-2);
     expect(second?.body.transactionId).toBe(first?.body.transactionId as string);

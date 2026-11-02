@@ -83,7 +83,7 @@ function of(
  * Mensagens exatas com que o `pg` lança `Error` **sem** `code` quando a
  * conexão cai (Postgres parado ou reiniciado com conexões abertas no pool)
  * ou não abre a tempo. Comparação exata: um `Error` qualquer com texto
- * parecido continua sendo bug (D5, D21.7).
+ * parecido continua sendo bug (D5, D21.9).
  */
 const PG_CONNECTION_LOST_MESSAGES = new Set([
   "Connection terminated unexpectedly",

@@ -12,8 +12,10 @@ import { logger } from "../shared/logger/logger";
 async function bootstrap() {
   const app = await NestFactory.createApplicationContext(OutboxPublisherAppModule, { logger: false });
   app.enableShutdownHooks(["SIGTERM", "SIGINT"]);
-  app.get(OutboxPublisher).start();
-  logger.info("outbox-publisher iniciado");
+  const publisher = app.get(OutboxPublisher);
+  publisher.start();
+  // O dono dos leases (D20.5): liga o `locked_by` da outbox a esta instância.
+  logger.info({ leaseToken: publisher.leaseToken }, "outbox-publisher iniciado");
 }
 
 bootstrap().catch(exitOnBootstrapFailure("outbox-publisher"));

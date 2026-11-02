@@ -1,3 +1,4 @@
+import type { SNSClient } from "@aws-sdk/client-sns";
 import { Inject, Module, type OnModuleDestroy } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { Logger } from "pino";
@@ -7,7 +8,7 @@ import { LOGGER } from "../../../../shared/logger/logger.module";
 import { outboxEventsStalledTotal } from "../../../../shared/metrics/metrics";
 import { MikroOrmOutboxStore } from "../persistence/outbox-store";
 import { OutboxPublisher } from "./outbox-publisher";
-import { SnsEventPublisher } from "./sns-event-publisher";
+import { SnsEventPublisher, type SnsSender } from "./sns-event-publisher";
 
 /** Para o publisher antes de o ORM fechar (D8.6). */
 class OutboxPublisherShutdown implements OnModuleDestroy {
@@ -18,6 +19,15 @@ class OutboxPublisherShutdown implements OnModuleDestroy {
   }
 }
 
+/** O `SNSClient` do processo: timeout menor que o lease (D20.5). */
+export const SNS_CLIENT = Symbol("SNS_CLIENT");
+/**
+ * Quem o publisher usa para o `Publish`. Por padrão, o próprio
+ * `SNS_CLIENT`; o teste de processos separados (D21.4) troca só este
+ * provider por um decorador que conta, e o resto da montagem é a de produção.
+ */
+export const SNS_SENDER = Symbol("SNS_SENDER");
+
 /**
  * Contexto `wagering` no processo `outbox-publisher` (D7.4, D9.6). O
  * cliente SNS tem o timeout menor que o lease, validado na config (D20.5);
@@ -26,19 +36,25 @@ class OutboxPublisherShutdown implements OnModuleDestroy {
 @Module({
   providers: [
     {
+      provide: SNS_CLIENT,
+      useFactory: (config: AppConfig): SNSClient =>
+        createSnsClient(config.aws, { requestTimeoutMs: config.outbox.snsRequestTimeoutMs }),
+      inject: [APP_CONFIG],
+    },
+    { provide: SNS_SENDER, useExisting: SNS_CLIENT },
+    {
       provide: OutboxPublisher,
-      useFactory: async (config: AppConfig, orm: MikroORM, logger: Logger) => {
-        const client = createSnsClient(config.aws, { requestTimeoutMs: config.outbox.snsRequestTimeoutMs });
+      useFactory: async (config: AppConfig, orm: MikroORM, logger: Logger, client: SNSClient, sender: SnsSender) => {
         const topicArn = await topicArnOf(client, config.aws.sns.wageringEventsTopic);
         return new OutboxPublisher(
           new MikroOrmOutboxStore(orm),
-          new SnsEventPublisher(client, topicArn),
+          new SnsEventPublisher(sender, topicArn),
           logger,
           { countStalled: () => outboxEventsStalledTotal.inc() },
           { leaseMs: config.outbox.leaseMs },
         );
       },
-      inject: [APP_CONFIG, MikroORM, LOGGER],
+      inject: [APP_CONFIG, MikroORM, LOGGER, SNS_CLIENT, SNS_SENDER],
     },
     OutboxPublisherShutdown,
   ],

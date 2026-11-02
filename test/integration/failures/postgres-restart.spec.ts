@@ -49,9 +49,14 @@ afterAll(async () => {
   }
 }, SETUP_MS);
 
-/** O processo continua o mesmo: não saiu nem foi reiniciado. */
-async function stillRunning(process: TestProcess): Promise<boolean> {
-  return Promise.race([process.exited.then(() => false), Promise.resolve(true)]);
+/**
+ * O processo continua o mesmo: não saiu nem foi reiniciado. Estado
+ * síncrono (`exitCode` do Bun e o flag do `exited`), nunca uma corrida de
+ * promises: o `Promise.race` com um `Promise.resolve(true)` sempre dava
+ * `true`, mesmo com o processo morto (achado 1 da revisão da S8).
+ */
+function stillRunning(process: TestProcess): boolean {
+  return process.running && process.starts === 1;
 }
 
 /** Reenvia com a mesma key enquanto a resposta for `503` (o provedor, D16.3). */
@@ -94,7 +99,7 @@ describe("D5 D21.7: falhas do Postgres com os processos de pé (Postgres própri
     // Nada foi gravado no 503: a volta é a primeira aplicação, não um replay.
     expect(back.body.idempotentReplay).toBe(false);
     expect(await balanceOf(wallet.id)).toEqual(brl("90.00"));
-    expect(await stillRunning(apiProcess)).toBe(true);
+    expect(stillRunning(apiProcess)).toBe(true);
     await expectLedgerMatchesBalances(own?.credentials("app"));
   }, SLOW_TEST_MS);
 
@@ -123,8 +128,8 @@ describe("D5 D21.7: falhas do Postgres com os processos de pé (Postgres própri
     expect(reconciliation.status).toBe(200);
     expect(((await reconciliation.json()) as { consistent: boolean }).consistent).toBe(true);
     expect((await queueCounts(queues.dlqUrl)).visible).toBe(0);
-    expect(await stillRunning(apiProcess)).toBe(true);
-    expect(await stillRunning(consumerProcess)).toBe(true);
+    expect(stillRunning(apiProcess)).toBe(true);
+    expect(stillRunning(consumerProcess)).toBe(true);
     await expectLedgerMatchesBalances(own?.credentials("app"));
   }, SLOW_TEST_MS);
 });

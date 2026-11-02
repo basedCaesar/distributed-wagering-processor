@@ -26,7 +26,7 @@ bun run migration:down    # desfaz todas
 bun run migration:verify  # up → down → up no banco de teste
 
 bun run check             # typecheck + lint + unit + migration:verify + integração + concorrência
-bun run test:repeat concurrency 10   # n rodadas seguidas; log de cada falha em logs/test-repeat/
+bun run test:repeat concurrency 10   # n rodadas seguidas; resumo sempre e log de cada falha em logs/test-repeat/
 bun run test:proofs       # remove cada proteção e exige que o teste dela falhe (proofs/README.md)
 bun run acceptance        # exemplos do §9 e do §10, literalmente
 ```
@@ -85,19 +85,19 @@ flowchart LR
 
 Morto à força no meio da carga, nada se perde nem duplica: a transação desfeita volta pela reentrega ou pelo reenvio do provedor (mesma key), o lease vence e outra instância continua. É o R-13-C8, provado com todos os processos separados em `test/concurrency/restart.spec.ts`.
 
-**Prazos.** Cada requisição tem 10 s (`HTTP_REQUEST_TIMEOUT_MS`, D21.3): estourado, `503` com `Retry-After: 1`; o trabalho não é cancelado e o reenvio com a mesma key cai no replay. O nginx espera 15 s, para o `503` da api chegar antes do `504` dele. Lease do worker e visibilidade do consumidor são configuráveis e validados na subida contra o tamanho do lote (D21.6); ver [`src/shared/config/README.md`](src/shared/config/README.md).
+**Prazos.** Cada requisição tem 10 s (`HTTP_REQUEST_TIMEOUT_MS`, D21.3): estourado, `503` com `Retry-After: 1`; o trabalho não é cancelado e o reenvio com a mesma key cai no replay; o desfecho tardio (commitou ou falhou) vai para o log, com `correlationId` e `idempotencyKey`. O nginx (`nginx:1.27.5-alpine`, versão exata ≥ 1.27.3 por causa do `resolve` no upstream, [`nginx/README.md`](nginx/README.md)) espera 15 s, para o `503` da api chegar antes do `504` dele. Lease do worker e visibilidade do consumidor são configuráveis e validados na subida contra o tamanho do lote (D21.6); ver [`src/shared/config/README.md`](src/shared/config/README.md).
 
 **Onde está provado:**
 
 | Requisito | Teste |
 |---|---|
-| R-13-C4, R-05-08, R-08-06: 3 processos na mesma wallet | `test/concurrency/multi-instance.spec.ts` (3 `api` + 3 `consumer` reais, waiters de 3 processos no `pg_locks` por `application_name`, D21.1) |
+| R-13-C4, R-05-08, R-08-06: 3 processos na mesma wallet | `test/concurrency/multi-instance.spec.ts` (3 `api` + 3 `consumer` reais; o lock só é solto com as 3 `api` e pelo menos 1 `consumer` esperando no `pg_locks`, por `application_name`, D21.1) |
 | R-13-C6: dois publishers em processos separados | `test/concurrency/outbox-processes.spec.ts` (D21.4) |
-| R-13-C8, R-13-I6: reinício no meio da carga | `test/concurrency/restart.spec.ts` (topologia inteira; reconciliação de todas as wallets do teste, D21.5) |
+| R-13-C8, R-13-I6: reinício no meio da carga | `test/concurrency/restart.spec.ts` (topologia inteira; cada processo morto com trabalho em andamento visto no banco, D21.11; reconciliação de todas as wallets do teste, D21.5) |
 | D5, R-13-I6: Postgres fora e reiniciado | `test/integration/failures/postgres-restart.spec.ts` (Postgres próprio do teste, D21.7) |
 | D5, B7.7: SQS fora | `test/integration/failures/sqs-down.spec.ts` |
 | D5, D21.3: prazo da requisição | `test/integration/http/request-timeout.spec.ts` |
-| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda no Linux (CI) e foi conferido à mão com `docker stop` nos 11 processos, saída 0 ([`test/README.md`](test/README.md)) |
+| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda fora do Windows; ainda não há CI (é o primeiro extra, depois da S10), então até lá a prova do sinal real é a conferência à mão com `docker stop` nos 11 processos, saída 0 ([`test/README.md`](test/README.md)) |
 
 ## Infraestrutura
 
@@ -151,5 +151,6 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Health | [`src/shared/health/README.md`](src/shared/health/README.md) |
 | Testes (suítes, regras, processos separados, plataforma) | [`test/README.md`](test/README.md) |
 | Provas (cada proteção removida derruba um teste) | [`proofs/README.md`](proofs/README.md) |
+| nginx (balanceador das 3 api) | [`nginx/README.md`](nginx/README.md) |
 
 Os testes da infraestrutura de filas estão em `test/integration/localstack-infra.spec.ts`.

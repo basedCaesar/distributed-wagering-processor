@@ -76,6 +76,16 @@ describe("D7.4 D21.2: topologia do Compose", () => {
     }
   });
 
+  it("D7.4: a imagem do nginx é uma versão exata ≥ 1.27.3 (o `resolve` do upstream não existe antes)", () => {
+    const image = services.nginx?.image ?? "";
+    const match = /^nginx:(\d+)\.(\d+)\.(\d+)(?:-alpine)?$/.exec(image);
+    expect({ image, exact: match !== null }).toEqual({ image, exact: true });
+    const [major = 0, minor = 0, patch = 0] = (match?.slice(1) ?? []).map((part) => Number.parseInt(part, 10));
+    // major.minor.patch como um número só (cada parte < 1000): 1.27.3 → 1_027_003.
+    const atLeast = major * 1_000_000 + minor * 1_000 + patch >= 1_027_003;
+    expect({ image, atLeast_1_27_3: atLeast }).toEqual({ image, atLeast_1_27_3: true });
+  });
+
   it("D7.4 D21.6: o ambiente de cada processo do Compose passa na validação da config (sem o .env.test por trás)", () => {
     for (const [name, service] of processServices()) {
       const env = service.environment ?? {};

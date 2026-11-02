@@ -13,7 +13,16 @@ import {
   type TestTopic,
   unpublishedCount,
 } from "../support/outbox";
-import { apiClient, authEnv, ProcessGroup, type TestProcess, waitFor, walletLockWaiterApps } from "../support/processes";
+import { type HoldingProxy, startHoldingProxy } from "../support/holding-proxy";
+import {
+  apiClient,
+  authEnv,
+  leaseTokenOf,
+  ProcessGroup,
+  type TestProcess,
+  waitFor,
+  walletLockWaiterApps,
+} from "../support/processes";
 import { createTestQueues, queueCounts, sendMessage, type TestQueues } from "../support/sqs";
 import {
   type ApiClient,
@@ -30,6 +39,8 @@ import {
 /** A topologia inteira em processos, dois reinícios de lease (5 s) e a visibilidade (10 s). */
 const SLOW_TEST_MS = 180_000;
 const WALLETS = 4;
+/** Rodadas de "mais um evento" até o publisher-1 reivindicar um (cada uma é uma disputa entre os dois). */
+const PUBLISHER_ROUNDS = 20;
 
 /**
  * Prazos curtos nos processos do teste (D21.6), com as contas validadas
@@ -50,8 +61,10 @@ let transactions: TestQueues;
 let auditorQueues: TestQueues;
 let topic: TestTopic;
 let group: ProcessGroup;
+let proxy: HoldingProxy;
 
 beforeEach(async () => {
+  proxy = await startHoldingProxy(process.env.AWS_ENDPOINT ?? "");
   issuer = await startTestIssuer();
   transactions = await createTestQueues();
   auditorQueues = await createTestQueues();
@@ -65,6 +78,7 @@ afterEach(async () => {
   await group.close();
   await Promise.all([transactions.destroy(), auditorQueues.destroy(), topic.destroy()]);
   await issuer.stop();
+  await proxy.close();
 });
 
 /**
@@ -127,6 +141,36 @@ function planFor(wallet: TestWallet): WalletPlan {
   };
 }
 
+/** A pendente da wallet está reivindicada (lease vigente) por `leaseToken` (D18.10). */
+async function pendingClaimedBy(walletId: string, leaseToken: string): Promise<boolean> {
+  return withClient("app", async (client) => {
+    const { rows } = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM wager_transactions
+        WHERE wallet_id = $1 AND status = 'PENDING_REFERENCE'
+          AND locked_by = $2 AND locked_until > now()`,
+      [walletId, leaseToken],
+    );
+    return (rows[0]?.n ?? 0) > 0;
+  });
+}
+
+/**
+ * Algum evento das wallets está reivindicado por `leaseToken` e não
+ * publicado (D20.5). O lease pode já ter vencido: enquanto outro publisher
+ * não reivindica, o `locked_by` continua o dele e o Publish dele está em voo.
+ */
+async function outboxClaimedBy(walletIds: readonly string[], leaseToken: string): Promise<boolean> {
+  return withClient("app", async (client) => {
+    const { rows } = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM outbox_messages
+        WHERE ordering_key = ANY($1::uuid[]) AND published_at IS NULL
+          AND locked_by = $2`,
+      [walletIds, leaseToken],
+    );
+    return (rows[0]?.n ?? 0) > 0;
+  });
+}
+
 async function pendingCount(walletIds: readonly string[]): Promise<number> {
   return withClient("app", async (client) => {
     const { rows } = await client.query<{ n: number }>(
@@ -138,7 +182,7 @@ async function pendingCount(walletIds: readonly string[]): Promise<number> {
 }
 
 describe("R-13-C8 R-13-I6 D7.4 D21.5: reinício no meio da carga", () => {
-  it("R-13-C8 R-13-I6 D21.2 D21.5: topologia D7.4 em processos; api, consumer, worker e publisher mortos à força no meio da carga e reiniciados → fila vazia, nenhuma pendente, outbox publicada e auditada em ordem, reconciliação consistent: true em todas as wallets do teste", async () => {
+  it("R-13-C8 R-13-I6 D21.2 D21.5: topologia D7.4 em processos; cada um morto à força com trabalho em andamento visto no banco (api-2 e um consumer esperando a wallet travada, um worker com a pendente reivindicada esperando a wallet, o publisher-1 com um evento reivindicado e o Publish em voo) e reiniciado → fila vazia, nenhuma pendente, outbox publicada e auditada em ordem, reconciliação consistent: true em todas as wallets do teste", async () => {
     const env = {
       ...authEnv(issuer),
       ...SHORT_LEASES,
@@ -148,8 +192,12 @@ describe("R-13-C8 R-13-I6 D7.4 D21.5: reinício no meio da carga", () => {
       QUEUE_WAGERING_EVENTS_AUDITOR: auditorQueues.queueName,
       QUEUE_WAGERING_EVENTS_AUDITOR_DLQ: auditorQueues.dlqName,
     };
-    const spawn = (kind: TestProcess["kind"], instance: string) => group.spawn(kind, { instance, env });
-    const [api1, api2, api3, consumer1, , , worker1, , publisher1] = await Promise.all([
+    // O publisher-1 fala com o LocalStack real por um proxy que o teste pode
+    // segurar: o Publish fica em voo com o evento reivindicado (achado 4).
+    const publisherEnv = { ...env, AWS_ENDPOINT: proxy.url };
+    const spawn = (kind: TestProcess["kind"], instance: string, processEnv = env) =>
+      group.spawn(kind, { instance, env: processEnv });
+    const [api1, api2, api3, consumer1, consumer2, consumer3, worker1, worker2, publisher1] = await Promise.all([
       spawn("api", "api-1"),
       spawn("api", "api-2"),
       spawn("api", "api-3"),
@@ -158,11 +206,15 @@ describe("R-13-C8 R-13-I6 D7.4 D21.5: reinício no meio da carga", () => {
       spawn("consumer", "consumer-3"),
       spawn("pending-worker", "worker-1"),
       spawn("pending-worker", "worker-2"),
-      spawn("outbox-publisher", "publisher-1"),
+      spawn("outbox-publisher", "publisher-1", publisherEnv),
       spawn("outbox-publisher", "publisher-2"),
       spawn("event-auditor", "auditor-1"),
     ]);
-    if (!api1 || !api2 || !api3 || !consumer1 || !worker1 || !publisher1) throw new Error("topologia incompleta");
+    if (!api1 || !api2 || !api3 || !consumer1 || !consumer2 || !consumer3 || !worker1 || !worker2 || !publisher1) {
+      throw new Error("topologia incompleta");
+    }
+    const consumers = [consumer1, consumer2, consumer3];
+    const workers = [worker1, worker2];
     const apis = [api1, api2, api3].map((p) => apiClient(p, issuer));
 
     const plans = await Promise.all(
@@ -179,13 +231,23 @@ describe("R-13-C8 R-13-I6 D7.4 D21.5: reinício no meio da carga", () => {
       plans.map((plan) => sendMessage(transactions.queueUrl, plan.queuedBet.body, { groupId: plan.wallet.id })),
     );
 
-    // 2ª metade, com a 1ª wallet travada: a requisição dela fica em voo na
-    // api-2 (visto no pg_locks) quando os processos são mortos.
+    // 2ª metade, com a 1ª wallet travada e o Publish do publisher-1 segurado.
+    // Cada processo só é morto depois de o banco mostrar trabalho dele em
+    // andamento (CLAUDE.md: estado observável, nunca `sleep`):
+    // - api-2 e um consumer: esperando o lock da wallet travada (pg_locks);
+    // - um worker: a pendente da wallet travada com `locked_by` dele, e ele
+    //   esperando o lock dessa wallet;
+    // - publisher-1: um evento com `locked_by` dele, não publicado, com o
+    //   Publish parado no proxy.
+    // As requisições que esperam além do lock_timeout levam 503 e o provedor
+    // reenvia (submitResilient); a mensagem volta pela visibilidade.
     const [held] = plans;
     if (!held) throw new Error("sem wallets");
+    proxy.hold();
     const lock = await holdWalletLock(held.wallet.id);
     const observer = await connect("app");
     let secondHalf: Promise<Awaited<ReturnType<typeof submit>>[]>;
+    const killed: TestProcess[] = [];
     try {
       secondHalf = Promise.all(
         plans.flatMap((plan) => [submitResilient(apis, 1, plan.bet2), submitResilient(apis, 2, plan.win1)]),
@@ -193,18 +255,83 @@ describe("R-13-C8 R-13-I6 D7.4 D21.5: reinício no meio da carga", () => {
       await Promise.all(
         plans.map((plan) => sendMessage(transactions.queueUrl, plan.bet1AgainByQueue.body, { groupId: plan.wallet.id })),
       );
+
       await waitFor(
         async () => (await walletLockWaiterApps(observer, lock)).includes("api-2"),
         "a api-2 esperando a wallet travada",
         WAITERS_DEADLINE_MS,
       );
-      await Promise.all([api2.kill(), consumer1.kill(), worker1.kill(), publisher1.kill()]);
+      await api2.kill();
+      killed.push(api2);
+
+      let consumerVictim: TestProcess | undefined;
+      await waitFor(
+        async () => {
+          const waiters = await walletLockWaiterApps(observer, lock);
+          consumerVictim = consumers.find((c) => waiters.includes(c.instance));
+          return consumerVictim !== undefined;
+        },
+        "um consumer com mensagem em voo, esperando a wallet travada",
+        15_000,
+      );
+      if (!consumerVictim) throw new Error("sem consumer em voo");
+      await consumerVictim.kill();
+      killed.push(consumerVictim);
+
+      let workerVictim: TestProcess | undefined;
+      await waitFor(
+        async () => {
+          const waiters = await walletLockWaiterApps(observer, lock);
+          for (const worker of workers) {
+            if (waiters.includes(worker.instance) && (await pendingClaimedBy(held.wallet.id, leaseTokenOf(worker)))) {
+              workerVictim = worker;
+              return true;
+            }
+          }
+          return false;
+        },
+        "um worker com a pendente reivindicada (locked_by), esperando a wallet travada",
+        15_000,
+      );
+      if (!workerVictim) throw new Error("sem worker em andamento");
+      await workerVictim.kill();
+      killed.push(workerVictim);
+
       await lock.release();
-      await Promise.all([api2.restart(), consumer1.restart(), worker1.restart(), publisher1.restart()]);
+
+      // O publisher-1 disputa a outbox com o publisher-2: se a carga já foi
+      // toda publicada pelo outro, abre mais uma wallet (a abertura grava um
+      // evento na outbox). Cada rodada termina por estado observável: o
+      // publisher-1 reivindicou um evento, ou o publisher-2 publicou o novo.
+      const publisherToken = leaseTokenOf(publisher1);
+      let publisherInFlight = await outboxClaimedBy(walletIds, publisherToken);
+      for (let round = 0; !publisherInFlight && round < PUBLISHER_ROUNDS; round++) {
+        const extra = await createWallet(apis[0] as ApiClient, brl("1000.00"));
+        walletIds.push(extra.id);
+        await waitFor(
+          async () => {
+            publisherInFlight = await outboxClaimedBy(walletIds, publisherToken);
+            return publisherInFlight || (await unpublishedCount([extra.id])) === 0;
+          },
+          "o evento novo reivindicado pelo publisher-1 ou publicado pelo publisher-2",
+          15_000,
+        );
+      }
+      if (!publisherInFlight) {
+        throw new Error(`o publisher-1 não reivindicou nenhum evento em ${PUBLISHER_ROUNDS} rodadas`);
+      }
+      await publisher1.kill();
+      killed.push(publisher1);
+      proxy.release();
+
+      await Promise.all(killed.map((p) => p.restart()));
     } finally {
+      proxy.release();
       await lock.release();
       await observer.end();
     }
+    expect(killed.map((p) => p.kind).sort()).toEqual(["api", "consumer", "outbox-publisher", "pending-worker"]);
+    expect(killed.every((p) => p.running && p.starts === 2)).toBe(true);
     const second = await secondHalf;
     expect(second.map((r) => r.status)).toEqual(second.map(() => 200));
 

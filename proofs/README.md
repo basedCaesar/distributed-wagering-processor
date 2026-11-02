@@ -39,4 +39,6 @@ Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteçã
 | 13 | `13-restricted-role.patch` | papel restrito do banco (D7.3) | D7.3: papel que não é superusuário nem dono |
 | 14 | `14-mark-published-owner.patch` | `AND locked_by = ?` no `markPublished` (D20.5) | D20.5: A publica depois de B pegar o lease |
 
+**Provas 3 e 4: defesa em camadas.** Sem o `CHECK` de saldo ≥ 0, um saldo negativo ainda é recusado, por outro trigger (`23000`). Sem o trigger append-only, o `UPDATE` no ledger ainda é recusado, por um `CHECK` (`23514`). Nas duas, o teste falha **pelo código do erro**: ele é específico da proteção removida e exige que a recusa venha dela (`CHECK` e trigger append-only, respectivamente). A prova mostra que o teste pega a remoção, não que a proteção é a única barreira: há outra proteção que também recusa, de propósito (D7.3, invariantes no banco).
+
 O título exato de cada teste está no manifesto. Um patch que deixar de aplicar (o código mudou) faz a prova falhar com a saída do `git apply`: atualize o patch, nunca o teste.

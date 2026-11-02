@@ -100,7 +100,8 @@ services:
 
   # Única porta da api para fora: os `curl` do §9 vão para localhost:3000.
   nginx:
-    image: nginx:1.27-alpine
+    # Versão exata: o `server … resolve` do upstream só existe a partir da 1.27.3 (nginx/README.md).
+    image: nginx:1.27.5-alpine
     ports:
       - "3000:80"
     volumes:

@@ -36,6 +36,14 @@ export interface TestProcess {
   lines: string[];
   /** O processo saiu (por kill ou sozinho). */
   readonly exited: Promise<number>;
+  /**
+   * Estado síncrono: `true` enquanto o processo atual não saiu. Lê o
+   * `exitCode` do Bun (nulo enquanto roda) e o flag setado no `exited`;
+   * nunca uma corrida de promises (achado 1 da revisão da S8).
+   */
+  readonly running: boolean;
+  /** Quantas vezes o processo foi (re)iniciado: 1 na subida, +1 a cada `restart()`. */
+  readonly starts: number;
   /** Mata à força (no Windows, sem shutdown; D21.2) e espera sair. */
   kill(): Promise<void>;
   /** Mata à força e sobe de novo, com a mesma instância e a mesma porta. */
@@ -107,9 +115,13 @@ export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Pr
   const lines: string[] = [];
   let proc: Subprocess<"ignore", "pipe", "pipe">;
   let exited: Promise<number>;
+  let gone = false;
+  let starts = 0;
 
   async function start(): Promise<void> {
     const from = lines.length;
+    starts++;
+    gone = false;
     proc = Bun.spawn([process.execPath, entrypoint], {
       cwd: REPO_ROOT,
       env,
@@ -121,9 +133,9 @@ export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Pr
     // `lines` depois de um kill vê tudo o que o processo escreveu.
     const drained = Promise.all([pipeLines(proc.stdout, lines), pipeLines(proc.stderr, lines)]);
     exited = Promise.all([proc.exited, drained]).then(([code]) => code);
-    let gone = false;
-    void exited.then(() => {
-      gone = true;
+    const current = proc;
+    void current.exited.then(() => {
+      if (proc === current) gone = true;
     });
     await waitFor(
       async () => {
@@ -153,6 +165,12 @@ export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Pr
     get exited() {
       return exited;
     },
+    get running() {
+      return !gone && proc.exitCode === null && proc.signalCode === null;
+    },
+    get starts() {
+      return starts;
+    },
     async kill() {
       proc.kill("SIGKILL");
       await exited;
@@ -169,6 +187,19 @@ export async function spawnProcess(kind: ProcessKind, options: SpawnOptions): Pr
     },
   };
   return handle;
+}
+
+/**
+ * O `leaseToken` (o `locked_by` que a instância grava, D18.10, D20.5) que o
+ * worker ou o publisher logou na subida mais recente.
+ */
+export function leaseTokenOf(process: Pick<TestProcess, "kind" | "instance" | "lines">): string {
+  for (const line of [...process.lines].reverse()) {
+    if (logMessage(line) !== `${process.kind} iniciado`) continue;
+    const { leaseToken } = JSON.parse(line) as { leaseToken?: string };
+    if (typeof leaseToken === "string") return leaseToken;
+  }
+  throw new Error(`${process.instance} não logou o leaseToken na subida`);
 }
 
 /** Variáveis de auth para uma `api` separada validar os tokens do emissor de teste (D10.3). */

@@ -18,7 +18,7 @@ Mapeamento de erros para HTTP (D5). Todo erro que chega à borda passa por `clas
 | sem permissão | `403` | `FORBIDDEN` | |
 | não encontrado | `404` | `NOT_FOUND` | wallet, rota |
 | conflito | `409` | o do erro | `WALLET_ALREADY_EXISTS`, `EXTERNAL_ID_CONFLICT`, `INBOX_MESSAGE_CONFLICT` (só na fila, vai para a DLQ, D19.4) |
-| transitório | `503` | `TEMPORARILY_UNAVAILABLE` | JWKS do emissor indisponível (D16.16); SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException`; as mensagens de conexão perdida que o `pg` lança **sem** `code` (Postgres parado ou reiniciado com conexões no pool, comparação exata, D21.7); prazo da requisição esgotado (D21.3) |
+| transitório | `503` | `TEMPORARILY_UNAVAILABLE` | JWKS do emissor indisponível (D16.16); SQLSTATE `55P03` (lock_timeout), `57014` (statement_timeout), `40P01`, `40001`, classes `08`, `53`, `57P`; `ECONNREFUSED` e afins; `ConnectionException`; as mensagens de conexão perdida que o `pg` lança **sem** `code` (Postgres parado ou reiniciado com conexões no pool; lista fechada e comparação exata, D21.9); prazo da requisição esgotado (D21.3) |
 | interno | `500` | `INTERNAL_ERROR` | erro de domínio que escapou da borda, constraint sem tradução, qualquer outra coisa |
 
 Uma constraint violada que o repositório não traduziu para um erro de aplicação é bug, não conflito: vira `500`. A mensagem de um erro interno não vaza para o cliente, e o log leva só nome, SQLSTATE e constraint, nunca o `detail` do banco, que pode trazer valores (D11.1).

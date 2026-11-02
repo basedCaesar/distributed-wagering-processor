@@ -91,6 +91,70 @@ describe("D5 D21.3: prazo da requisição HTTP", () => {
     await expectLedgerMatchesBalances();
   });
 
+  it("D21.3 D11.1: 503 de prazo e depois o trabalho commita → log 'requisição commitou depois do prazo' com correlationId e idempotencyKey, sem valores nem playerId", async () => {
+    const wallet = await createWallet(api, brl("100.00"));
+    const body = wagerBody(wallet, { money: brl("10.00") });
+    const key = `${body.providerId}:${body.externalTransactionId}`;
+    const correlationId = `late-${Bun.randomUUIDv7()}`;
+    const lock = await holdWalletLock(wallet.id);
+    const observer = await connect("app");
+    let late: Awaited<ReturnType<typeof submit>>;
+    try {
+      const pending = submit(api, body, { headers: { "x-correlation-id": correlationId } });
+      await waitForWalletLockWaiters(observer, lock, 1);
+      late = await pending;
+    } finally {
+      // Solto logo depois do 503, antes do lock_timeout: a submissão segue e commita.
+      await lock.release();
+      await observer.end();
+    }
+    expect(late.status).toBe(503);
+
+    const lateLogs = () => api.logs.filter((line) => line.correlationId === correlationId && line.lateOutcome !== undefined);
+    await waitFor(() => lateLogs().length > 0, "o log do desfecho depois do prazo", 5000);
+    const [entry] = lateLogs();
+    expect(entry).toMatchObject({
+      msg: "requisição commitou depois do prazo",
+      lateOutcome: "committed",
+      correlationId,
+      idempotencyKey: key,
+      method: "POST",
+    });
+    // D11.1: nenhum valor, saldo ou playerId no log.
+    const text = JSON.stringify(entry);
+    expect(text).not.toContain("10.00");
+    expect(text).not.toContain(wallet.playerId);
+    expect((await effectsOf(body.providerId, body.externalTransactionId)).transactions).toHaveLength(1);
+    await expectLedgerMatchesBalances();
+  });
+
+  it("D21.3 D5: 503 de prazo e depois o trabalho falha (lock_timeout) → log 'requisição falhou depois do prazo' com o erro classificado", async () => {
+    const wallet = await createWallet(api, brl("100.00"));
+    const body = wagerBody(wallet, { money: brl("10.00") });
+    const correlationId = `late-${Bun.randomUUIDv7()}`;
+    const lock = await holdWalletLock(wallet.id);
+    const observer = await connect("app");
+    const lateLogs = () => api.logs.filter((line) => line.correlationId === correlationId && line.lateOutcome !== undefined);
+    try {
+      const pending = submit(api, body, { headers: { "x-correlation-id": correlationId } });
+      await waitForWalletLockWaiters(observer, lock, 1);
+      expect((await pending).status).toBe(503);
+      // Lock segurado até o banco desistir (lock_timeout de 2 s): o trabalho falha depois do 503.
+      await waitFor(() => lateLogs().length > 0, "o log da falha depois do prazo", 5000);
+    } finally {
+      await lock.release();
+      await observer.end();
+    }
+    expect(lateLogs()[0]).toMatchObject({
+      msg: "requisição falhou depois do prazo",
+      lateOutcome: "failed",
+      category: "transient",
+      code: "TEMPORARILY_UNAVAILABLE",
+    });
+    expect((await effectsOf(body.providerId, body.externalTransactionId)).transactions).toEqual([]);
+    await expectLedgerMatchesBalances();
+  });
+
   it("D21.3: uma requisição dentro do prazo não é afetada", async () => {
     const wallet = await createWallet(api, brl("100.00"));
     const response = await submit(api, wagerBody(wallet, { money: brl("10.00") }));

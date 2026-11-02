@@ -23,7 +23,8 @@ const POOL_SIZE = 10;
 const PARALLEL = 50;
 /**
  * 50 requisições serializadas no lock levam de 1,5 s a 3,9 s conforme a
- * carga da máquina; perto dos 5 s padrão do bun (aprovado na S8).
+ * carga da máquina; perto dos 5 s padrão do bun. Só o prazo do teste,
+ * nunca uma asserção (D21.10).
  */
 const SLOW_TEST_MS = 30_000;
 

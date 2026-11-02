@@ -2,8 +2,9 @@
  * `bun run test:repeat <suíte> <n>`: roda `bun run test:<suíte>` n vezes
  * seguidas (definição de pronto: concorrência verde em 10 execuções). O log
  * completo de cada rodada que falha vai para `logs/test-repeat/<início>/`
- * (a pasta `/logs` é ignorada pelo git). No fim, imprime um resumo e sai com
- * código 1 se alguma rodada falhou.
+ * (a pasta `/logs` é ignorada pelo git). No fim, imprime um resumo, grava-o
+ * **sempre** em `logs/test-repeat/<início>/summary.md` (data, suíte,
+ * rodadas, verdes) e sai com código 1 se alguma rodada falhou.
  *
  * Exemplo: `bun run test:repeat concurrency 10`.
  */
@@ -64,10 +65,35 @@ for (let run = 1; run <= count; run++) {
 }
 
 const total = durations.reduce((sum, seconds) => sum + seconds, 0);
-console.log(
-  `\nResumo test:${suite}: ${count - failures.length}/${count} verdes, ${failures.length} falhas, ${total.toFixed(1)} s no total.`,
+const summary = [
+  `Resumo test:${suite}: ${count - failures.length}/${count} verdes, ${failures.length} falhas, ${total.toFixed(1)} s no total.`,
+  ...failures.map((failure) => `  rodada ${failure.run}: código ${failure.exitCode}, log em ${failure.log}`),
+];
+console.log(`\n${summary.join("\n")}`);
+
+// O resumo vai sempre para a pasta da execução, mesmo sem falha: é o registro de que as n rodadas rodaram.
+await mkdir(logDir, { recursive: true });
+const summaryFile = join(logDir, "summary.md");
+await writeFile(
+  summaryFile,
+  [
+    `# test:repeat ${suite} ${count}`,
+    "",
+    `- início: ${startedAt}`,
+    `- suíte: test:${suite}`,
+    `- rodadas: ${count}`,
+    `- verdes: ${count - failures.length}`,
+    `- falhas: ${failures.length}`,
+    `- duração total: ${total.toFixed(1)} s`,
+    "",
+    "| Rodada | Resultado | Duração (s) |",
+    "|---|---|---|",
+    ...durations.map((seconds, i) => {
+      const failure = failures.find((f) => f.run === i + 1);
+      return `| ${i + 1} | ${failure ? `falhou (código ${failure.exitCode})` : "verde"} | ${seconds.toFixed(1)} |`;
+    }),
+    "",
+  ].join("\n"),
 );
-for (const failure of failures) {
-  console.log(`  rodada ${failure.run}: código ${failure.exitCode}, log em ${failure.log}`);
-}
+console.log(`Resumo gravado em ${summaryFile}`);
 process.exit(failures.length === 0 ? 0 : 1);

@@ -6,6 +6,11 @@ import type { AppConfig } from "../config/config.schema";
  * e **uma** tentativa por chamada: a repetição é do publisher, com backoff.
  * Com os 3 `maxAttempts` padrão do SDK, uma chamada lenta poderia passar
  * do lease. No LocalStack, credenciais estáticas (como o SQS).
+ *
+ * `throwOnRequestTimeout`: sem ele, o `@smithy/node-http-handler` só
+ * **avisa** quando o `requestTimeout` estoura, e a chamada nunca falha: um
+ * SNS que aceita a conexão e não responde prendia o publisher para sempre
+ * (achado na correção da revisão da S8; `test/integration/outbox/sns-timeout.spec.ts`).
  */
 export function createSnsClient(
   aws: Pick<AppConfig["aws"], "region" | "endpoint">,
@@ -19,6 +24,7 @@ export function createSnsClient(
     requestHandler: {
       requestTimeout: options.requestTimeoutMs,
       connectionTimeout: options.requestTimeoutMs,
+      throwOnRequestTimeout: true,
     },
   });
 }
