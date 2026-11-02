@@ -6,49 +6,74 @@ import { Counter, Gauge, Histogram, Registry } from "prom-client";
  */
 export const metricsRegistry = new Registry();
 
+const CHANNELS = ["http", "sqs", "worker"] as const;
+const LOCK_CONFLICT_REASONS = ["lock_timeout", "deadlock"] as const;
 /**
- * Os únicos valores que cada label pode ter (D22.11): conjuntos fechados,
- * nunca ids. Um teste de unidade percorre o registry e falha com um label
- * fora daqui; os adaptadores trocam um valor fora do conjunto por `OTHER`.
+ * Motivos da DLQ (D22.4): os `code` do `classifyError()`, o
+ * `ATTEMPTS_EXHAUSTED` e o `OTHER`, para um `code` que não está aqui.
+ */
+const DLQ_REASONS = [
+  "VALIDATION_ERROR",
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "WALLET_ALREADY_EXISTS",
+  "EXTERNAL_ID_CONFLICT",
+  "IDEMPOTENCY_KEY_CONFLICT",
+  "INBOX_MESSAGE_CONFLICT",
+  "TEMPORARILY_UNAVAILABLE",
+  "INTERNAL_ERROR",
+  "ATTEMPTS_EXHAUSTED",
+  "OTHER",
+] as const;
+
+/**
+ * Os únicos valores de cada label, **por métrica** (D22.11): conjuntos
+ * fechados, nunca ids. Dois labels com o mesmo nome em métricas diferentes
+ * (`reason`, `outcome`) têm listas diferentes. Os testes percorrem o
+ * registry e falham com uma métrica fora daqui, um label que ela não
+ * declara aqui ou um valor fora da lista dela.
  */
 export const METRIC_LABEL_VALUES = {
-  status: ["PROCESSED", "REJECTED", "PENDING_REFERENCE", "FAILED"],
-  kind: ["OPENING", "BET", "WIN", "LOSS", "REFUND", "ROLLBACK"],
-  channel: ["http", "sqs", "worker"],
-  layer: ["fast_path", "lock", "unique_index", "inbox"],
-  component: ["consumer", "event_auditor", "pending_worker", "outbox_publisher", "submission"],
-  consumer: ["wager_transactions", "event_auditor"],
-  reason: [
-    "VALIDATION_ERROR",
-    "UNAUTHENTICATED",
-    "FORBIDDEN",
-    "NOT_FOUND",
-    "WALLET_ALREADY_EXISTS",
-    "EXTERNAL_ID_CONFLICT",
-    "IDEMPOTENCY_KEY_CONFLICT",
-    "INBOX_MESSAGE_CONFLICT",
-    "TEMPORARILY_UNAVAILABLE",
-    "INTERNAL_ERROR",
-    "ATTEMPTS_EXHAUSTED",
-    "lock_timeout",
-    "deadlock",
-    "OTHER",
-  ],
-  queue: ["wager_transactions_dlq", "event_auditor_dlq"],
-  outcome: ["ok", "error"],
-} as const satisfies Record<string, readonly string[]>;
+  reconciliation_divergences_total: {},
+  outbox_events_stalled_total: {},
+  audited_events_out_of_order_total: {},
+  wagering_duplicates_total: { layer: ["fast_path", "lock", "unique_index", "inbox"] },
+  wagering_transactions_total: {
+    status: ["PROCESSED", "REJECTED", "PENDING_REFERENCE", "FAILED"],
+    kind: ["OPENING", "BET", "WIN", "LOSS", "REFUND", "ROLLBACK"],
+    channel: CHANNELS,
+  },
+  wagering_retries_total: {
+    component: ["consumer", "event_auditor", "pending_worker", "outbox_publisher", "submission"],
+  },
+  wagering_dlq_messages_total: { consumer: ["wager_transactions", "event_auditor"], reason: DLQ_REASONS },
+  wallet_lock_wait_seconds: { outcome: ["acquired", ...LOCK_CONFLICT_REASONS] },
+  wallet_lock_conflicts_total: { reason: LOCK_CONFLICT_REASONS },
+  wagering_processing_duration_seconds: { channel: CHANNELS, outcome: ["ok", "error"] },
+  wagering_refund_after_settlement_total: { channel: CHANNELS },
+  sqs_dlq_depth: { queue: ["wager_transactions_dlq", "event_auditor_dlq"] },
+  outbox_pending_events: {},
+  outbox_lag_seconds: {},
+} as const satisfies Record<string, Record<string, readonly string[]>>;
 
-type LabelValue<L extends keyof typeof METRIC_LABEL_VALUES> = (typeof METRIC_LABEL_VALUES)[L][number];
+type Labels = typeof METRIC_LABEL_VALUES;
 
-export type MetricChannel = LabelValue<"channel">;
-export type RetryComponent = LabelValue<"component">;
-export type DlqConsumer = LabelValue<"consumer">;
-export type DlqQueue = LabelValue<"queue">;
-export type DlqReason = LabelValue<"reason">;
+export type MetricChannel = (typeof CHANNELS)[number];
+export type RetryComponent = Labels["wagering_retries_total"]["component"][number];
+export type DlqConsumer = Labels["wagering_dlq_messages_total"]["consumer"][number];
+export type DlqQueue = Labels["sqs_dlq_depth"]["queue"][number];
+export type DlqReason = (typeof DLQ_REASONS)[number];
+export type LockConflictReason = (typeof LOCK_CONFLICT_REASONS)[number];
 
-/** Um valor fora do conjunto fechado vira `OTHER` (D22.11): nunca um texto livre na métrica. */
+/**
+ * O `code` do `classifyError()` como motivo da DLQ (D22.4, D22.11): um
+ * `code` fora da lista (um `ConflictError` novo, por exemplo) vira `OTHER`.
+ * Assim o conjunto continua fechado mesmo quando surge um código novo, e
+ * nenhum texto livre chega à métrica.
+ */
 export function dlqReason(code: string): DlqReason {
-  return (METRIC_LABEL_VALUES.reason as readonly string[]).includes(code) ? (code as DlqReason) : "OTHER";
+  return (DLQ_REASONS as readonly string[]).includes(code) ? (code as DlqReason) : "OTHER";
 }
 
 /** Execuções de reconciliação com divergência (R-09-19, D6.9). */
@@ -108,10 +133,15 @@ export const wageringDlqMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
-/** Espera do `SELECT … FOR UPDATE` da wallet (D22.5). */
+/**
+ * Espera do `SELECT … FOR UPDATE` da wallet (D22.5), também quando ela
+ * termina em `lock_timeout` ou deadlock: `outcome` = `acquired` |
+ * `lock_timeout` | `deadlock`.
+ */
 export const walletLockWaitSeconds = new Histogram({
   name: "wallet_lock_wait_seconds",
-  help: "Tempo do SELECT … FOR UPDATE da wallet (espera pelo lock incluída)",
+  help: "Tempo do SELECT … FOR UPDATE da wallet (espera pelo lock incluída), por desfecho: acquired, lock_timeout ou deadlock",
+  labelNames: ["outcome"] as const,
   buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
   registers: [metricsRegistry],
 });

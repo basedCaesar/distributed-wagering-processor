@@ -1,5 +1,6 @@
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { AuditIntegrationEventUseCase } from "../../src/modules/wagering/application/audit-integration-event.use-case";
+import type { UnitOfWork } from "../../src/modules/wagering/application/ports";
 import type { ConsumerPolicy } from "../../src/modules/wagering/infra/messaging/consumer-policy";
 import { EventAuditor } from "../../src/modules/wagering/infra/messaging/event-auditor";
 import type { MessageOutcome } from "../../src/modules/wagering/infra/messaging/sqs-consumer";
@@ -30,18 +31,23 @@ const TEST_POLICY: Partial<ConsumerPolicy> = { waitTimeSeconds: 2, backoffMaxSec
  */
 export async function startTestAuditor(
   queues: { queueUrl: string; dlqUrl: string },
-  options: { consumerName?: string } = {},
+  options: {
+    consumerName?: string;
+    /** Injeta falhas na transação do auditor (ex.: transitório, D22.3). */
+    wrapUow?: (uow: UnitOfWork) => UnitOfWork;
+  } = {},
 ): Promise<TestAuditor> {
   const consumerName = options.consumerName ?? `auditor-test-${Bun.randomUUIDv7()}`;
   const orm: MikroORM = await createOrm({ credentials: await credentialsFor("app"), entities: WAGERING_ENTITIES });
   const client = testSqsClient();
   let outOfOrder = 0;
+  const base = new MikroOrmUnitOfWork(orm);
   const auditor = new EventAuditor(
     {
       queue: new SqsWagerQueue(client, queues),
       attempts: new MikroOrmMessageAttempts(orm),
       logger,
-      audit: new AuditIntegrationEventUseCase(new MikroOrmUnitOfWork(orm)),
+      audit: new AuditIntegrationEventUseCase(options.wrapUow ? options.wrapUow(base) : base),
       alerts: { countOutOfOrder: () => outOfOrder++ },
     },
     { ...TEST_POLICY, consumerName },

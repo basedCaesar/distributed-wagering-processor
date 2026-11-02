@@ -1,4 +1,5 @@
-import { metricsRegistry } from "../../src/shared/metrics/metrics";
+import type { Registry } from "prom-client";
+import { METRIC_LABEL_VALUES, metricsRegistry } from "../../src/shared/metrics/metrics";
 
 type Labels = Record<string, string>;
 
@@ -44,17 +45,60 @@ export async function histogram(name: string, labels: Labels = {}): Promise<{ co
   return { count, sum };
 }
 
-/** Todos os valores de label observados no registry, por nome de label (D22.11). */
-export async function observedLabelValues(): Promise<Map<string, Set<string>>> {
-  const observed = new Map<string, Set<string>>();
-  for (const metric of await metricsRegistry.getMetricsAsJSON()) {
+/** A lista de valores de cada label, por métrica (D22.11). */
+type ClosedSets = Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
+
+/** O `le` dos histogramas é do prom-client, não nosso. */
+const PROM_INTERNAL_LABELS = new Set(["le"]);
+
+/**
+ * D22.11: métricas sem lista e labels declarados que a lista **da métrica**
+ * não tem. Uma linha por violação; vazio = tudo dentro do conjunto.
+ */
+export function labelNameViolations(
+  registry: Registry = metricsRegistry,
+  closed: ClosedSets = METRIC_LABEL_VALUES,
+): string[] {
+  const violations: string[] = [];
+  for (const metric of registry.getMetricsAsArray()) {
+    const allowed = closed[metric.name];
+    if (!allowed) {
+      violations.push(`${metric.name}: sem lista de labels`);
+      continue;
+    }
+    const declared = [...((metric as unknown as { labelNames?: readonly string[] }).labelNames ?? [])].sort();
+    const expected = Object.keys(allowed).sort();
+    if (declared.join(",") !== expected.join(",")) {
+      violations.push(`${metric.name}: declara {${declared.join(",")}}, a lista tem {${expected.join(",")}}`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * D22.11: cada valor de label observado no registry, conferido contra a
+ * lista **da própria métrica** (nunca uma lista compartilhada por nome de
+ * label). Roda o `collect` dos gauges.
+ */
+export async function closedSetViolations(
+  registry: Registry = metricsRegistry,
+  closed: ClosedSets = METRIC_LABEL_VALUES,
+): Promise<string[]> {
+  const violations: string[] = [];
+  for (const metric of await registry.getMetricsAsJSON()) {
+    const allowed = closed[metric.name];
+    if (!allowed) {
+      violations.push(`${metric.name}: sem lista de labels`);
+      continue;
+    }
     for (const value of metric.values as MetricValue[]) {
       for (const [label, labelValue] of Object.entries(value.labels)) {
-        const set = observed.get(label) ?? new Set<string>();
-        set.add(String(labelValue));
-        observed.set(label, set);
+        if (PROM_INTERNAL_LABELS.has(label)) continue;
+        if (!allowed[label]?.includes(String(labelValue))) {
+          violations.push(`${metric.name}{${label}="${String(labelValue)}"}`);
+        }
       }
     }
   }
-  return observed;
+  return [...new Set(violations)];
 }

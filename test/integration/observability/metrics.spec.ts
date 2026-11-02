@@ -1,22 +1,26 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { ChangeMessageVisibilityCommand, DeleteMessageCommand } from "@aws-sdk/client-sqs";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { UnitOfWork } from "../../../src/modules/wagering/application/ports";
-import { SqsWagerQueue } from "../../../src/modules/wagering/infra/messaging/sqs-wager-queue";
+import { SqsWagerQueue, type SqsSender } from "../../../src/modules/wagering/infra/messaging/sqs-wager-queue";
 import { trackDlqDepth, trackOutboxBacklog } from "../../../src/modules/wagering/infra/observability/gauges";
 import { WAGERING_ENTITIES } from "../../../src/modules/wagering/infra/persistence";
 import { MikroOrmOutboxStore } from "../../../src/modules/wagering/infra/persistence/outbox-store";
-import { TransientError } from "../../../src/shared/errors/app-errors";
-import { logger } from "../../../src/shared/logger/logger";
-import { METRIC_LABEL_VALUES } from "../../../src/shared/metrics/metrics";
+import { createSqsClient } from "../../../src/shared/aws/sqs-client";
+import { ConflictError, TransientError } from "../../../src/shared/errors/app-errors";
+import { createLogger, logger } from "../../../src/shared/logger/logger";
 import { createOrm } from "../../../src/shared/orm/create-orm";
 import { startTestApi, type TestApi } from "../../support/api";
 import { envelopeJson, startTestAuditor } from "../../support/auditor";
 import { startTestConsumer, type TestConsumer, wagerMessage } from "../../support/consumer";
 import { connect, credentialsFor, newId, withClient } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
-import { histogram, metricValue, observedLabelValues } from "../../support/metrics";
+import { insertRow, rejected, transactionRow } from "../../support/db-seed";
+import { startHoldingProxy } from "../../support/holding-proxy";
+import { closedSetViolations, histogram, metricValue } from "../../support/metrics";
 import { createTestTopic, insertOutboxEvent, parkAllOutbox, startTestPublisher } from "../../support/outbox";
-import { createTestQueues, sendMessage, type TestQueues, testSqsClient } from "../../support/sqs";
+import { waitForWaiterOn } from "../../support/pg-locks";
+import { createTestQueues, queueCounts, sendMessage, type TestQueues, testSqsClient } from "../../support/sqs";
 import {
   brl,
   createWallet,
@@ -97,6 +101,33 @@ function failingOnce(): (uow: UnitOfWork) => UnitOfWork {
     };
   };
 }
+
+/** Unidade de trabalho em que toda chamada lança `error()`. */
+function failingWith(error: () => Error): (uow: UnitOfWork) => UnitOfWork {
+  return () => ({ run: () => Promise.reject(error()) });
+}
+
+/** Cliente SQS cujo comando `failing` falha; os outros vão ao LocalStack real. */
+function failingSqs(failing: typeof DeleteMessageCommand | typeof ChangeMessageVisibilityCommand) {
+  return (client: SqsSender): SqsSender => ({
+    send(command, options) {
+      if (command instanceof failing) {
+        return Promise.reject(Object.assign(new Error(`${failing.name} falhou (teste)`), { code: "ECONNRESET" }));
+      }
+      return client.send(command, options);
+    },
+  });
+}
+
+/** Um `ConflictError` com um code que nenhuma lista conhece (D22.4, D22.11). */
+class UnknownCodeConflict extends ConflictError {
+  constructor() {
+    super("CODIGO_NOVO_S9", "conflito com um code novo, injetado pelo teste");
+  }
+}
+
+/** `lock_timeout` da conexão da app (D5), em segundos. */
+const LOCK_TIMEOUT_S = 2;
 
 describe("R-12-03 D22.2: transações por status, kind e canal", () => {
   it("R-12-03 D22.2: HTTP PROCESSED, REJECTED e PENDING_REFERENCE contam com channel=http; replay não conta", async () => {
@@ -255,6 +286,89 @@ describe("R-12-03 D22.3: retries por componente", () => {
     },
     SLOW_TEST_MS,
   );
+
+  it(
+    "R-12-03 D22.3: transitório no auditor → retry de event_auditor",
+    async () => {
+      const target = await queues();
+      const auditor = await startTestAuditor(target, { wrapUow: failingOnce() });
+      closers.push(() => auditor.close());
+      const before = await metricValue("wagering_retries_total", { component: "event_auditor" });
+
+      await sendMessage(target.queueUrl, envelopeJson({ walletId: newId(), walletVersion: 2 }).body, { groupId: "g-1" });
+      expect(await auditor.pollOnce()).toEqual(["retry_scheduled"]);
+      expect(await auditor.pollOnce()).toEqual(["processed"]);
+
+      expect(await metricValue("wagering_retries_total", { component: "event_auditor" })).toBe(before + 1);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "R-12-03 D22.3 D3.6: o UNIQUE barra o commit e o use case repete → retry de submission",
+    async () => {
+      // Como no teste da S4 (test/concurrency/submit-transaction.spec.ts): uma
+      // rival grava a mesma key na wallet B e segura o commit; a submissão na
+      // wallet A espera no índice (pg_locks), a rival commita e o UNIQUE barra.
+      const walletA = await createWallet(api, brl("100.00"));
+      const walletB = await createWallet(api, brl("100.00"));
+      const body = wagerBody(walletA, { money: brl("10.00") });
+      const key = `provider-a:${body.externalTransactionId}`;
+      const before = await metricValue("wagering_retries_total", { component: "submission" });
+      const rival = await connect("app");
+      const observer = await connect("app");
+      try {
+        await rival.query("BEGIN");
+        await insertRow(
+          rival,
+          "wager_transactions",
+          transactionRow(
+            { id: walletB.id, playerId: walletB.playerId, currency: "BRL" },
+            {
+              ...rejected,
+              provider_id: "provider-a",
+              idempotency_key: key,
+              external_transaction_id: `rival-${newId()}`,
+              balance_after: "100.00",
+            },
+          ),
+        );
+        const { rows } = await rival.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+
+        const pending = submit(api, body, { key });
+        await waitForWaiterOn(observer, rows[0]?.pid as number);
+        await rival.query("COMMIT");
+
+        expect((await pending).status).toBe(409);
+      } finally {
+        await rival.query("ROLLBACK");
+        await rival.end();
+        await observer.end();
+      }
+
+      expect(await metricValue("wagering_retries_total", { component: "submission" })).toBe(before + 1);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "R-12-03 D22.3: o ChangeMessageVisibility do backoff falha → nada foi agendado, o retry não conta",
+    async () => {
+      const target = await queues();
+      const consumer = await consumerOn(target, {
+        wrapUow: failingOnce(),
+        wrapSqs: failingSqs(ChangeMessageVisibilityCommand),
+      });
+      const wallet = await createWallet(api, brl("100.00"));
+      const before = await metricValue("wagering_retries_total", { component: "consumer" });
+
+      await sendMessage(target.queueUrl, wagerMessage(wallet).body, { groupId: wallet.id });
+      expect(await consumer.pollOnce()).toEqual(["unresolved"]);
+
+      expect(await metricValue("wagering_retries_total", { component: "consumer" })).toBe(before);
+    },
+    SLOW_TEST_MS,
+  );
 });
 
 describe("R-12-03 D22.4: mensagens na DLQ por motivo e profundidade", () => {
@@ -306,14 +420,115 @@ describe("R-12-03 D22.4: mensagens na DLQ por motivo e profundidade", () => {
     },
     SLOW_TEST_MS,
   );
+
+  it(
+    "R-12-03 D22.4 D8.3: transitório até o limite de tentativas → DLQ{wager_transactions, ATTEMPTS_EXHAUSTED}",
+    async () => {
+      const target = await queues();
+      const consumer = await consumerOn(target, {
+        wrapUow: failingWith(() => new TestTransientError()),
+        policy: { maxAttempts: 2 },
+      });
+      const wallet = await createWallet(api, brl("100.00"));
+      const labels = { consumer: "wager_transactions", reason: "ATTEMPTS_EXHAUSTED" };
+      const before = await metricValue("wagering_dlq_messages_total", labels);
+
+      await sendMessage(target.queueUrl, wagerMessage(wallet).body, { groupId: wallet.id });
+      expect(await consumer.pollOnce()).toEqual(["retry_scheduled"]);
+      expect(await consumer.pollOnce()).toEqual(["dead_lettered"]);
+
+      expect(await metricValue("wagering_dlq_messages_total", labels)).toBe(before + 1);
+      expect((await queueCounts(target.dlqUrl)).visible).toBe(1);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "R-12-03 D22.4: a cópia chega à DLQ e o delete falha (DeadLetterDeleteError) → conta mesmo assim",
+    async () => {
+      const target = await queues();
+      const consumer = await consumerOn(target, { wrapSqs: failingSqs(DeleteMessageCommand) });
+      const labels = { consumer: "wager_transactions", reason: "VALIDATION_ERROR" };
+      const before = await metricValue("wagering_dlq_messages_total", labels);
+
+      await sendMessage(target.queueUrl, "{ isto não é json", { groupId: "g-1" });
+      expect(await consumer.pollOnce()).toEqual(["dead_letter_not_deleted"]);
+
+      expect(await metricValue("wagering_dlq_messages_total", labels)).toBe(before + 1);
+      // A cópia está mesmo na DLQ (cliente direto, sem o wrapper).
+      expect((await queueCounts(target.dlqUrl)).visible).toBe(1);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "D22.4 D22.11: um code que nenhuma lista conhece → DLQ com reason=OTHER, nunca o texto do code",
+    async () => {
+      const target = await queues();
+      const consumer = await consumerOn(target, { wrapUow: failingWith(() => new UnknownCodeConflict()) });
+      const wallet = await createWallet(api, brl("100.00"));
+      const before = await metricValue("wagering_dlq_messages_total", { consumer: "wager_transactions", reason: "OTHER" });
+
+      await sendMessage(target.queueUrl, wagerMessage(wallet).body, { groupId: wallet.id });
+      expect(await consumer.pollOnce()).toEqual(["dead_lettered"]);
+
+      expect(
+        await metricValue("wagering_dlq_messages_total", { consumer: "wager_transactions", reason: "OTHER" }),
+      ).toBe(before + 1);
+      expect(
+        await metricValue("wagering_dlq_messages_total", { consumer: "wager_transactions", reason: "CODIGO_NOVO_S9" }),
+      ).toBe(0);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "D22.4: a leitura da profundidade estoura o prazo → o gauge fica com o último valor e loga warn",
+    async () => {
+      const target = await queues();
+      // A DLQ não deduplica por conteúdo: cada envio direto leva o próprio id.
+      const toDlq = () =>
+        sendMessage(target.dlqUrl, JSON.stringify({ probe: newId() }), { groupId: "g-dlq", deduplicationId: newId() });
+      await toDlq();
+      // O SQS real atrás de um proxy que o teste segura (sem simular nada).
+      const proxy = await startHoldingProxy(process.env.AWS_ENDPOINT ?? "");
+      const sqs = createSqsClient({ region: process.env.AWS_REGION ?? "us-east-1", endpoint: proxy.url });
+      const lines: Record<string, unknown>[] = [];
+      const captured = createLogger({ write: (line: string) => lines.push(JSON.parse(line)) });
+      const stopTracking = trackDlqDepth("wager_transactions_dlq", new SqsWagerQueue(sqs, target), captured, 300);
+      closers.push(async () => {
+        stopTracking();
+        proxy.release();
+        sqs.destroy();
+        await proxy.close();
+      });
+
+      expect(await metricValue("sqs_dlq_depth", { queue: "wager_transactions_dlq" })).toBe(1);
+
+      proxy.hold();
+      // A profundidade real muda para 2 (cliente direto); o gauge não pode vê-la.
+      await toDlq();
+      expect((await queueCounts(target.dlqUrl)).visible).toBe(2);
+
+      expect(await metricValue("sqs_dlq_depth", { queue: "wager_transactions_dlq" })).toBe(1);
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          level: 40,
+          gauge: "sqs_dlq_depth:wager_transactions_dlq",
+          msg: "leitura do gauge falhou; fica o último valor",
+        }),
+      );
+    },
+    SLOW_TEST_MS,
+  );
 });
 
 describe("R-12-03 D22.5: conflitos de lock e tempo de espera", () => {
   it(
-    "R-12-03 D22.5: a espera pelo lock da wallet entra no histograma",
+    "R-12-03 D22.5: a espera pelo lock da wallet entra no histograma com outcome=acquired",
     async () => {
       const wallet = await createWallet(api, brl("100.00"));
-      const before = await histogram("wallet_lock_wait_seconds");
+      const before = await histogram("wallet_lock_wait_seconds", { outcome: "acquired" });
       const lock = await holdWalletLock(wallet.id);
       const observer = await connect("app");
       let heldMs = 0;
@@ -329,7 +544,7 @@ describe("R-12-03 D22.5: conflitos de lock e tempo de espera", () => {
         await observer.end();
       }
 
-      const after = await histogram("wallet_lock_wait_seconds");
+      const after = await histogram("wallet_lock_wait_seconds", { outcome: "acquired" });
       expect(after.count).toBeGreaterThanOrEqual(before.count + 1);
       // A espera durou, no mínimo, do waiter visto no pg_locks até o lock ser solto.
       expect(after.sum - before.sum).toBeGreaterThanOrEqual(heldMs / 1000 - 0.001);
@@ -338,10 +553,13 @@ describe("R-12-03 D22.5: conflitos de lock e tempo de espera", () => {
   );
 
   it(
-    "R-12-03 D22.5 D5: lock_timeout → 503 e wallet_lock_conflicts_total{lock_timeout}",
+    "R-12-03 D22.5 D5: lock_timeout → 503, wallet_lock_conflicts_total{lock_timeout} e a espera inteira no histograma com outcome=lock_timeout",
     async () => {
       const wallet = await createWallet(api, brl("100.00"));
-      const before = await metricValue("wallet_lock_conflicts_total", { reason: "lock_timeout" });
+      const before = {
+        conflicts: await metricValue("wallet_lock_conflicts_total", { reason: "lock_timeout" }),
+        wait: await histogram("wallet_lock_wait_seconds", { outcome: "lock_timeout" }),
+      };
       const lock = await holdWalletLock(wallet.id);
       try {
         const response = await submit(api, wagerBody(wallet));
@@ -350,7 +568,63 @@ describe("R-12-03 D22.5: conflitos de lock e tempo de espera", () => {
         await lock.release();
       }
 
-      expect(await metricValue("wallet_lock_conflicts_total", { reason: "lock_timeout" })).toBe(before + 1);
+      expect(await metricValue("wallet_lock_conflicts_total", { reason: "lock_timeout" })).toBe(before.conflicts + 1);
+      const after = await histogram("wallet_lock_wait_seconds", { outcome: "lock_timeout" });
+      expect(after.count).toBe(before.wait.count + 1);
+      // A espera foi até o lock_timeout (2 s): é a pior espera da hot wallet, e agora ela aparece.
+      expect(after.sum - before.wait.sum).toBeGreaterThanOrEqual(LOCK_TIMEOUT_S - 0.05);
+    },
+    SLOW_TEST_MS,
+  );
+
+  it(
+    "R-12-03 D22.5: deadlock real no lock da wallet → wallet_lock_conflicts_total{deadlock} e outcome=deadlock no histograma",
+    async () => {
+      // O ciclo, sem sleep: o consumidor grava a inbox (1º lock, D19.4) e
+      // espera a wallet, que a sessão `holder` travou (visto no pg_locks); o
+      // holder então tenta gravar a mesma chave da inbox e passa a esperar o
+      // consumidor. O consumidor esperava antes: o deadlock_timeout dele vence
+      // primeiro e ele é a vítima (40P01, transitório → retry).
+      const target = await queues();
+      const consumer = await consumerOn(target);
+      const wallet = await createWallet(api, brl("100.00"));
+      const message = wagerMessage(wallet);
+      const before = {
+        conflicts: await metricValue("wallet_lock_conflicts_total", { reason: "deadlock" }),
+        wait: await histogram("wallet_lock_wait_seconds", { outcome: "deadlock" }),
+      };
+      const holder = await connect("app");
+      const observer = await connect("app");
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT 1 FROM wallets WHERE id = $1 FOR UPDATE", [wallet.id]);
+        const { rows } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        await sendMessage(target.queueUrl, message.body, { groupId: wallet.id });
+
+        const polled = consumer.pollOnce();
+        await waitForWalletLockWaiters(observer, { pid: rows[0]?.pid as number, walletId: wallet.id }, 1);
+        const holderInsert = holder
+          .query(
+            `INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+             VALUES ($1, $2, $3, now(), now())`,
+            [consumer.consumerName, message.messageId, "0".repeat(64)],
+          )
+          .then(
+            () => "inserido",
+            (error: { code?: string }) => `falhou: ${error.code}`,
+          );
+
+        expect(await polled).toEqual(["retry_scheduled"]);
+        // A vítima foi o consumidor: o holder seguiu e gravou a chave.
+        expect(await holderInsert).toBe("inserido");
+      } finally {
+        await holder.query("ROLLBACK");
+        await holder.end();
+        await observer.end();
+      }
+
+      expect(await metricValue("wallet_lock_conflicts_total", { reason: "deadlock" })).toBe(before.conflicts + 1);
+      expect((await histogram("wallet_lock_wait_seconds", { outcome: "deadlock" })).count).toBe(before.wait.count + 1);
     },
     SLOW_TEST_MS,
   );
@@ -500,17 +774,7 @@ describe("D1.7 D22.8: refund_after_settlement", () => {
 });
 
 describe("D22.11: valores de label observados", () => {
-  it("D22.11: depois de todas as situações, todo valor de label observado pertence ao conjunto fechado", async () => {
-    const closed = METRIC_LABEL_VALUES as Record<string, readonly string[]>;
-    const outside: string[] = [];
-
-    for (const [label, values] of await observedLabelValues()) {
-      if (label === "le") continue;
-      for (const value of values) {
-        if (!closed[label]?.includes(value)) outside.push(`${label}=${value}`);
-      }
-    }
-
-    expect(outside).toEqual([]);
+  it("D22.11: depois de todas as situações, todo valor de label observado pertence à lista da própria métrica", async () => {
+    expect(await closedSetViolations()).toEqual([]);
   });
 });

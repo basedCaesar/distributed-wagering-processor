@@ -346,11 +346,15 @@ export class SqsConsumer {
     }
   }
 
-  /** Nova tentativa depois de uma falha (D8.2): conta como retry do componente (D22.3). */
+  /**
+   * Nova tentativa depois de uma falha (D8.2). Conta como retry do
+   * componente só depois que o backoff foi aplicado (D22.3): sem o
+   * `changeVisibility`, nada foi agendado.
+   */
   private async retry(message: QueueMessage, seconds: number): Promise<MessageOutcome> {
-    wageringRetriesTotal.inc({ component: this.labels.component });
     try {
       await this.deps.queue.changeVisibility(message, seconds);
+      wageringRetriesTotal.inc({ component: this.labels.component });
       return "retry_scheduled";
     } catch (error) {
       const { category, code } = classifyError(error);

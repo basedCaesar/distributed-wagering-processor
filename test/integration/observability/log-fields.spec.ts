@@ -17,11 +17,30 @@ import { type ApiClient, brl, submit, wagerBody } from "../../support/wagering";
 /** Subir dois processos e esperar a fila: o padrão de 5 s do bun não cabe. */
 const SLOW_TEST_MS = 60_000;
 
-const INITIAL = "9105.38";
-const HTTP_AMOUNT = "6087.41";
-const HTTP_BALANCE = "3017.97";
-const SQS_AMOUNT = "1001.13";
-const SQS_BALANCE = "2016.84";
+/**
+ * Valores com parte inteira de 7 a 8 dígitos, que não colidem com nenhum
+ * outro número do log (pid, porta, `durationMs`, `time`, ids): cada um é
+ * procurado também em centavos, com 4 casas e sem casas (`leakForms`).
+ */
+const INITIAL = "73914862.57";
+const HTTP_AMOUNT = "5268139.41";
+const HTTP_BALANCE = "68646723.16";
+const SQS_AMOUNT = "1904736.83";
+const SQS_BALANCE = "66741986.33";
+
+/**
+ * Os formatos em que um valor pode vazar: o de 2 casas (`6087.41`), em
+ * centavos inteiros (`608741`, o `bigint` do `Money`), com 4 casas
+ * (`6087.4100`) e como número sem casas (`6087`). Cada um só conta entre
+ * não-dígitos: `6087` dentro de `16087` não é vazamento.
+ */
+function leakForms(value: string): { form: string; pattern: RegExp }[] {
+  const [integer = "", cents = ""] = value.split(".");
+  return [value, `${integer}${cents}`, `${value}00`, integer].map((form) => ({
+    form,
+    pattern: new RegExp(`(?<![0-9])${form.replaceAll(".", "\\.")}(?![0-9])`),
+  }));
+}
 
 let issuer: TestIssuer;
 let queues: TestQueues;
@@ -133,21 +152,27 @@ describe("R-12-01 D11.1: campos obrigatórios nos logs", () => {
 });
 
 describe("R-12-02 D11.1: nada sensível nos logs", () => {
-  it("R-12-02 D11.1: nenhum valor, saldo, playerId ou token nas linhas da api e do consumer", () => {
+  it("R-12-02 D11.1: nenhum valor ou saldo (em 2 casas, centavos, 4 casas ou sem casas), playerId ou token nas linhas da api e do consumer", () => {
     const dump = [...api.lines, ...consumer.lines].join("\n");
 
-    for (const secret of [
-      playerId,
-      INITIAL,
-      HTTP_AMOUNT,
-      HTTP_BALANCE,
-      SQS_AMOUNT,
-      SQS_BALANCE,
-      operatorToken,
-      providerToken,
-      "Bearer ",
-    ]) {
+    for (const secret of [playerId, operatorToken, providerToken, "Bearer "]) {
       expect({ secret, found: dump.includes(secret) }).toEqual({ secret, found: false });
     }
+    for (const value of [INITIAL, HTTP_AMOUNT, HTTP_BALANCE, SQS_AMOUNT, SQS_BALANCE]) {
+      for (const { form, pattern } of leakForms(value)) {
+        expect({ value, form, found: pattern.test(dump) }).toEqual({ value, form, found: false });
+      }
+    }
+  });
+
+  it("R-12-02: a busca acha cada formato quando ele aparece (o teste acima não passa por não procurar)", () => {
+    const forms = leakForms(HTTP_AMOUNT).map(({ form }) => form);
+    expect(forms).toEqual(["5268139.41", "526813941", "5268139.4100", "5268139"]);
+    for (const { form, pattern } of leakForms(HTTP_AMOUNT)) {
+      expect({ form, found: pattern.test(`{"msg":"x","v":${form}}`) }).toEqual({ form, found: true });
+    }
+    // Entre dígitos não é o valor.
+    const [, , , integer] = leakForms(HTTP_AMOUNT);
+    expect(integer?.pattern.test(`{"time":152681391}`)).toBe(false);
   });
 });

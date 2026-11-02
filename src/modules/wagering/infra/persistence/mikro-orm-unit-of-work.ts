@@ -6,7 +6,11 @@ import {
 } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import { classifyError } from "../../../../shared/errors/classify-error";
-import { walletLockConflictsTotal, walletLockWaitSeconds } from "../../../../shared/metrics/metrics";
+import {
+  type LockConflictReason,
+  walletLockConflictsTotal,
+  walletLockWaitSeconds,
+} from "../../../../shared/metrics/metrics";
 import type { IntegrationEvent } from "../../domain/events/integration-event";
 import {
   type WagerTransaction,
@@ -66,8 +70,8 @@ const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollba
 /** O que liquida uma `BET` (D1.7, D22.8). */
 const SETTLEMENT_KINDS = [WagerTransactionKind.Win, WagerTransactionKind.Loss];
 
-/** SQLSTATE → motivo do `wallet_lock_conflicts_total` (D22.5). */
-const LOCK_CONFLICTS: Readonly<Record<string, "lock_timeout" | "deadlock">> = {
+/** SQLSTATE → motivo do `wallet_lock_conflicts_total` e desfecho do `wallet_lock_wait_seconds` (D22.5). */
+const LOCK_CONFLICTS: Readonly<Record<string, LockConflictReason>> = {
   "55P03": "lock_timeout",
   "40P01": "deadlock",
 };
@@ -234,19 +238,26 @@ function walletRepository(em: EntityManager): WalletRepository {
       return record?.id;
     },
     // Espera e conflitos do lock da wallet (D22.5): o ponto de disputa (D7.2).
+    // A espera que termina em lock_timeout ou deadlock também entra no
+    // histograma: são as piores esperas da hot wallet.
     async lockById(id) {
       const startedAt = performance.now();
+      const waited = () => (performance.now() - startedAt) / 1000;
       try {
         const record = await em.findOne(WalletSchema, id, {
           lockMode: LockMode.PESSIMISTIC_WRITE,
         });
-        walletLockWaitSeconds.observe((performance.now() - startedAt) / 1000);
+        walletLockWaitSeconds.observe({ outcome: "acquired" }, waited());
         return record ? walletFromRecord(record) : undefined;
       } catch (error) {
-        // Só conta; o erro segue para quem chamou (transitório, D5).
+        // Só mede e conta; o erro segue para quem chamou (transitório, D5).
+        // Outro erro (conexão perdida, por exemplo) não é desfecho do lock.
         const sqlState = classifyError(error).db?.sqlState;
         const reason = sqlState === undefined ? undefined : LOCK_CONFLICTS[sqlState];
-        if (reason !== undefined) walletLockConflictsTotal.inc({ reason });
+        if (reason !== undefined) {
+          walletLockWaitSeconds.observe({ outcome: reason }, waited());
+          walletLockConflictsTotal.inc({ reason });
+        }
         throw error;
       }
     },

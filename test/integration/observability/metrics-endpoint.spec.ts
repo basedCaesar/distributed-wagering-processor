@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { startTestIssuer, type TestIssuer } from "../../support/auth";
 import { wagerMessage } from "../../support/consumer";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
+import { type HoldingProxy, startHoldingProxy } from "../../support/holding-proxy";
 import { createTestTopic, type TestTopic } from "../../support/outbox";
+import { withClient } from "../../support/db";
 import { apiClient, authEnv, ProcessGroup, type ProcessKind, type TestProcess, waitFor } from "../../support/processes";
 import { createTestQueues, sendMessage, type TestQueues } from "../../support/sqs";
 import { type ApiClient, brl, createWallet, newExternalId, submit, wagerBody } from "../../support/wagering";
@@ -38,6 +40,7 @@ let issuer: TestIssuer;
 let txQueues: TestQueues;
 let auditorQueues: TestQueues;
 let topic: TestTopic;
+let snsProxy: HoldingProxy;
 let group: ProcessGroup;
 const processes = new Map<ProcessKind, TestProcess>();
 let client: ApiClient;
@@ -69,6 +72,7 @@ beforeAll(async () => {
   txQueues = await createTestQueues();
   auditorQueues = await createTestQueues();
   topic = await createTestTopic();
+  snsProxy = await startHoldingProxy(process.env.AWS_ENDPOINT ?? "");
   group = new ProcessGroup("s9-metrics-endpoint");
   const spawned = await Promise.all([
     group.spawn("api", { instance: "api-metrics", env: authEnv(issuer) }),
@@ -77,9 +81,11 @@ beforeAll(async () => {
       env: { QUEUE_WAGER_TRANSACTIONS: txQueues.queueName, QUEUE_WAGER_TRANSACTIONS_DLQ: txQueues.dlqName },
     }),
     group.spawn("pending-worker", { instance: "worker-metrics" }),
+    // O publisher fala com o LocalStack real por um proxy que o teste pode
+    // segurar: com o Publish parado, o evento fica sem publicar (D22.6).
     group.spawn("outbox-publisher", {
       instance: "publisher-metrics",
-      env: { SNS_TOPIC_WAGERING_EVENTS: topic.topicName },
+      env: { SNS_TOPIC_WAGERING_EVENTS: topic.topicName, AWS_ENDPOINT: snsProxy.url },
     }),
     group.spawn("event-auditor", {
       instance: "auditor-metrics",
@@ -94,7 +100,10 @@ beforeAll(async () => {
 }, SLOW_TEST_MS);
 
 afterAll(async () => {
+  // Solto antes de parar o publisher: ele não fica preso num Publish segurado.
+  snsProxy.release();
   await group.close();
+  await snsProxy.close();
   await txQueues.destroy();
   await auditorQueues.destroy();
   await topic.destroy();
@@ -178,12 +187,38 @@ describe("D22.2 D22.4 D22.6: a montagem de produção conta no processo certo", 
     expect(sample(auditorText, "sqs_dlq_depth", { queue: "event_auditor_dlq" })).toBe(0);
   });
 
-  it("D22.6: o outbox-publisher publica pendentes e lag", async () => {
-    const text = await (await scrape(get("outbox-publisher"))).text();
+  it(
+    "D22.6: com um evento sem publicar (Publish segurado no proxy), o /metrics do outbox-publisher mostra pending >= 1 e lag > 0",
+    async () => {
+      // Um gauge sem label aparece como 0 mesmo sem fonte nenhuma: só um
+      // valor diferente de 0 prova que o processo registrou a leitura
+      // (achado 1 da revisão da S9).
+      snsProxy.hold();
+      try {
+        const wallet = await createWallet(client, brl("100.00"));
+        // Estado observável: o publisher reivindicou um evento da wallet e o Publish está parado no proxy.
+        await waitFor(
+          async () =>
+            withClient("app", async (db) => {
+              const { rows } = await db.query(
+                `SELECT 1 FROM outbox_messages
+                  WHERE ordering_key = $1 AND locked_by IS NOT NULL AND published_at IS NULL`,
+                [wallet.id],
+              );
+              return rows.length > 0;
+            }),
+          "publisher reivindicou o evento da wallet",
+        );
 
-    expect(sample(text, "outbox_pending_events", {})).toBeGreaterThanOrEqual(0);
-    expect(sample(text, "outbox_lag_seconds", {})).toBeGreaterThanOrEqual(0);
-  });
+        const text = await (await scrape(get("outbox-publisher"))).text();
+        expect(sample(text, "outbox_pending_events", {})).toBeGreaterThanOrEqual(1);
+        expect(sample(text, "outbox_lag_seconds", {})).toBeGreaterThan(0);
+      } finally {
+        snsProxy.release();
+      }
+    },
+    SLOW_TEST_MS,
+  );
 
   it("D22.11: nenhum id aparece como valor de label no texto de nenhum processo", async () => {
     for (const process of processes.values()) {
