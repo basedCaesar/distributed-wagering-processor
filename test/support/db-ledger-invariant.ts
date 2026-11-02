@@ -1,4 +1,6 @@
 import { expect } from "bun:test";
+import { Client } from "pg";
+import type { DatabaseCredentials } from "../../src/shared/secrets/secrets-provider.port";
 import { withClient } from "./db";
 
 interface Divergence {
@@ -14,8 +16,8 @@ interface Divergence {
  * Σ débitos do ledger e version = último `wallet_version` (ou 1 sem
  * lançamento, D6.2). Lê com o papel da aplicação, em `REPEATABLE READ`.
  */
-export async function expectLedgerMatchesBalances(): Promise<void> {
-  const divergences = await withClient("app", async (client) => {
+export async function expectLedgerMatchesBalances(credentials?: DatabaseCredentials): Promise<void> {
+  const read = async (client: Client) => {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     try {
       const { rows } = await client.query<Divergence>(`
@@ -33,6 +35,19 @@ export async function expectLedgerMatchesBalances(): Promise<void> {
     } finally {
       await client.query("COMMIT");
     }
-  });
+  };
+  let divergences: Divergence[];
+  if (credentials === undefined) {
+    divergences = await withClient("app", read);
+  } else {
+    // Outro banco (ex.: o Postgres próprio do F3, D21.7), também com o papel da app.
+    const client = new Client(credentials);
+    await client.connect();
+    try {
+      divergences = await read(client);
+    } finally {
+      await client.end();
+    }
+  }
   expect(divergences).toEqual([]);
 }

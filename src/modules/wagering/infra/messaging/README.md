@@ -72,6 +72,7 @@ flowchart TD
 - **Segunda barreira, a key** (D3.8): `messageId` diferente com a mesma key passa pela inbox e o use case devolve replay.
 - **DLQ sem perda** (D19.6): envia para a DLQ e só depois apaga. Uma queda entre os dois deixa uma cópia a mais na DLQ; se o envio falha, nada é apagado. Nenhum atributo é acrescentado; o motivo vai para o log.
 - **Tentativas contadas no banco** (D8.3), nunca pelo `ApproximateReceiveCount`, que também conta devoluções do `SIGTERM` e crashes. Apagadas depois do ack e da DLQ (D19.11): uma mensagem devolvida da DLQ para a fila começa do zero.
+- **Visibilidade e lote configuráveis** (D21.6): `CONSUMER_VISIBILITY_TIMEOUT_S` e `CONSUMER_MAX_MESSAGES`, com a conta abaixo validada na subida; os padrões são 120 s e 10. Só os testes de reinício (R-13-C8) usam valores curtos.
 - **Ordem por grupo** (D19.6): a visibilidade de 120 s cobre o pior caso de um lote de um grupo (10 × (2 s de `lock_timeout` + 5 s de `statement_timeout`) = 70 s, mais a repetição da D3.6). Se uma mensagem fica na fila (retry), as seguintes do grupo no lote voltam com visibilidade 0 sem processar; o FIFO só as entrega de novo depois da primeira. A correção não depende de ordem (D8.1).
 - **SQS fora** (D19.10): o laço espera entre receives que falham (1 s a 30 s), sem rajada de CPU e de log.
 

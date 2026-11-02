@@ -1,0 +1,11 @@
+diff --git a/src/modules/wagering/infra/messaging/sqs-consumer.ts b/src/modules/wagering/infra/messaging/sqs-consumer.ts
+--- a/src/modules/wagering/infra/messaging/sqs-consumer.ts
++++ b/src/modules/wagering/infra/messaging/sqs-consumer.ts
+@@ -218,5 +218,7 @@
+     return runWithContext(parsed.context, async () => {
+       let result: "processed" | "duplicate";
++      // Prova 10 (D21.8): ack antes do commit.
++      await this.deps.queue.ack(message);
+       try {
+         result = await parsed.process();
+       } catch (error) {

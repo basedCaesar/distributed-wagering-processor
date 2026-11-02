@@ -79,8 +79,25 @@ function of(
   };
 }
 
+/**
+ * Mensagens exatas com que o `pg` lança `Error` **sem** `code` quando a
+ * conexão cai (Postgres parado ou reiniciado com conexões abertas no pool)
+ * ou não abre a tempo. Comparação exata: um `Error` qualquer com texto
+ * parecido continua sendo bug (D5, D21.7).
+ */
+const PG_CONNECTION_LOST_MESSAGES = new Set([
+  "Connection terminated unexpectedly",
+  "Connection terminated",
+  "Connection terminated due to connection timeout",
+  "timeout exceeded when trying to connect",
+  "Client has encountered a connection error and is not queryable",
+]);
+
 function isTransientDriverError(error: unknown): boolean {
   if (error instanceof ConnectionException) return true;
+  if (error instanceof Error && !("code" in error) && PG_CONNECTION_LOST_MESSAGES.has(error.message)) {
+    return true;
+  }
   if (typeof error !== "object" || error === null || !("code" in error)) {
     return false;
   }

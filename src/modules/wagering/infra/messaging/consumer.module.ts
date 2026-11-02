@@ -45,13 +45,20 @@ class ConsumerShutdown implements OnModuleDestroy {
           queueUrl: await queueUrlOf(client, config.aws.queues.wagerTransactions),
           dlqUrl: await queueUrlOf(client, config.aws.queues.wagerTransactionsDlq),
         });
-        return new WagerTransactionsConsumer({
-          queue,
-          submit,
-          attempts: new MikroOrmMessageAttempts(orm),
-          logger,
-          currencies: config.currencies,
-        });
+        return new WagerTransactionsConsumer(
+          {
+            queue,
+            submit,
+            attempts: new MikroOrmMessageAttempts(orm),
+            logger,
+            currencies: config.currencies,
+          },
+          // Visibilidade e lote da config, validados juntos na subida (D19.6, D21.6).
+          {
+            visibilityTimeoutSeconds: config.consumer.visibilityTimeoutSeconds,
+            maxMessages: config.consumer.maxMessages,
+          },
+        );
       },
       inject: [APP_CONFIG, MikroORM, SubmitWagerTransactionUseCase, LOGGER],
     },

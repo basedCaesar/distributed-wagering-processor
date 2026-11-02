@@ -4,13 +4,15 @@ import {
   type Options,
 } from "@mikro-orm/postgresql";
 import type { DatabaseCredentials } from "../secrets/secrets-provider.port";
-import { SESSION_OPTIONS } from "./db-session";
+import { sessionOptions } from "./db-session";
 
 export interface CreateOrmOptions {
   credentials: DatabaseCredentials;
   entities: EntitySchema[];
   /** Extras de config (ex.: o Migrator, só nas migrations). */
   overrides?: Partial<Options>;
+  /** `application_name` das conexões (D21.1). */
+  applicationName?: string;
 }
 
 /**
@@ -27,7 +29,7 @@ export async function createOrm(options: CreateOrmOptions): Promise<MikroORM> {
     user: credentials.user,
     password: credentials.password,
     entities: options.entities,
-    driverOptions: { options: SESSION_OPTIONS },
+    driverOptions: { options: sessionOptions(options.applicationName) },
     discovery: { warnWhenNoEntities: false },
     ensureDatabase: false,
     allowGlobalContext: false,

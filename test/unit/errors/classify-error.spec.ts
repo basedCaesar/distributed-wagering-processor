@@ -78,6 +78,25 @@ describe("S3 D5 D16.2: classifyError", () => {
     });
   });
 
+  // O `pg` lança `Error` sem `code` quando a conexão cai (Postgres parado ou
+  // reiniciado com conexões no pool): achado pelo F1 da S8 (D21.7).
+  it.each([
+    ["Connection terminated unexpectedly", new Error("Connection terminated unexpectedly")],
+    ["Connection terminated", new Error("Connection terminated")],
+    ["Connection terminated due to connection timeout", new Error("Connection terminated due to connection timeout")],
+    ["timeout exceeded when trying to connect", new Error("timeout exceeded when trying to connect")],
+    [
+      "Client has encountered a connection error and is not queryable",
+      new Error("Client has encountered a connection error and is not queryable"),
+    ],
+  ])("D5 D21.7: conexão perdida do pg sem código (%s) → transitório, 503", (_, error) => {
+    expect(classifyError(error)).toMatchObject({ category: "transient", httpStatus: 503 });
+  });
+
+  it("D5: um Error comum com texto parecido continua interno (só o texto exato do pg conta)", () => {
+    expect(classifyError(new Error("Connection terminated by the user"))).toMatchObject({ category: "internal" });
+  });
+
   it("D5: JSON mal formado (BadRequestException do Nest) → 400 VALIDATION_ERROR", () => {
     expect(classifyError(new BadRequestException("json"))).toMatchObject({
       httpStatus: 400,

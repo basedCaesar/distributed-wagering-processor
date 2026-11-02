@@ -1,3 +1,50 @@
+# Topologia da D7.4: mesma imagem, um entrypoint por processo.
+#   nginx → api ×3; consumer ×3; outbox-publisher ×2; pending-worker ×2; event-auditor ×1.
+# O bun é o PID 1 de cada container (ENTRYPOINT em forma exec no Dockerfile e
+# `command` em lista, sem shell): o SIGTERM do `docker compose stop` chega a
+# ele (D21.2). Cada processo tem 30 s para parar (D8.5, D8.6).
+
+x-app: &app
+  image: wagering-app:local
+  build: .
+  restart: unless-stopped
+  stop_grace_period: 30s
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+
+x-app-env: &app-env
+  NODE_ENV: development
+  # A config exige PORT em todo processo; só a api escuta nela.
+  PORT: "3000"
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: wagering
+  DB_USER: wagering_app
+  DB_PASSWORD: wagering_app
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT: http://localstack:4566
+  SNS_TOPIC_WAGERING_EVENTS: wagering-events.fifo
+  QUEUE_WAGER_TRANSACTIONS: wager-transactions.fifo
+  QUEUE_WAGER_TRANSACTIONS_DLQ: wager-transactions-dlq.fifo
+  QUEUE_WAGERING_EVENTS_AUDITOR: wagering-events-auditor.fifo
+  QUEUE_WAGERING_EVENTS_AUDITOR_DLQ: wagering-events-auditor-dlq.fifo
+
+x-api: &api
+  <<: *app
+  command: ["src/entrypoints/main-api.ts"]
+
+x-api-env: &api-env
+  <<: *app-env
+  # D10.1: o container do Keycloak entra na S10 (D10.4).
+  AUTH_ISSUER: http://keycloak:8080/realms/wagering
+  AUTH_AUDIENCE: wagering-api
+  AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -36,6 +83,7 @@ services:
 
   # One-shot: aplica as migrations com o papel dono e sai (D7.3).
   migrate:
+    image: wagering-app:local
     build: .
     command: ["scripts/migrate.ts", "up"]
     depends_on:
@@ -50,34 +98,61 @@ services:
       DB_MIGRATION_USER: wagering_owner
       DB_MIGRATION_PASSWORD: wagering_owner
 
-  api:
-    build: .
-    command: ["src/entrypoints/main-api.ts"]
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      localstack:
-        condition: service_healthy
-    environment:
-      NODE_ENV: development
-      PORT: "3000"
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_NAME: wagering
-      DB_USER: wagering_app
-      DB_PASSWORD: wagering_app
-      AWS_REGION: us-east-1
-      AWS_ENDPOINT: http://localstack:4566
-      SNS_TOPIC_WAGERING_EVENTS: wagering-events.fifo
-      QUEUE_WAGER_TRANSACTIONS: wager-transactions.fifo
-      QUEUE_WAGER_TRANSACTIONS_DLQ: wager-transactions-dlq.fifo
-      QUEUE_WAGERING_EVENTS_AUDITOR: wagering-events-auditor.fifo
-      QUEUE_WAGERING_EVENTS_AUDITOR_DLQ: wagering-events-auditor-dlq.fifo
-      # D10.1: o container do Keycloak entra na S10 (D10.4).
-      AUTH_ISSUER: http://keycloak:8080/realms/wagering
-      AUTH_AUDIENCE: wagering-api
-      AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+  # Única porta da api para fora: os `curl` do §9 vão para localhost:3000.
+  nginx:
+    image: nginx:1.27-alpine
     ports:
-      - "3000:3000"
+      - "3000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+    restart: unless-stopped
+
+  api-1:
+    <<: *api
+    environment:
+      <<: *api-env
+      DB_APPLICATION_NAME: api-1
+
+  api-2:
+    <<: *api
+    environment:
+      <<: *api-env
+      DB_APPLICATION_NAME: api-2
+
+  api-3:
+    <<: *api
+    environment:
+      <<: *api-env
+      DB_APPLICATION_NAME: api-3
+
+  consumer:
+    <<: *app
+    command: ["src/entrypoints/main-consumer.ts"]
+    environment: *app-env
+    deploy:
+      replicas: 3
+
+  outbox-publisher:
+    <<: *app
+    command: ["src/entrypoints/main-outbox-publisher.ts"]
+    environment: *app-env
+    deploy:
+      replicas: 2
+
+  pending-worker:
+    <<: *app
+    command: ["src/entrypoints/main-pending-worker.ts"]
+    environment: *app-env
+    deploy:
+      replicas: 2
+
+  event-auditor:
+    <<: *app
+    command: ["src/entrypoints/main-event-auditor.ts"]
+    environment: *app-env
+    deploy:
+      replicas: 1

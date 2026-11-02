@@ -60,27 +60,32 @@ Este projeto foi construído com um agente de IA como par de programação. Os r
 | S6 | A revisão por IA apontou um problema que não existia: disse que o teste do §10 ficava fraco a partir da 2ª rodada (com a `BET` já gravada, um consumidor que desse ack sem chamar o use case também passaria). O teste já usava um `consumer_name` aleatório por rodada e já conferia a linha `msg-123` da inbox, que só nasce na transação do use case | O agente que corrigia os achados, ao conferir o código antes de mudar | Nenhuma correção de comportamento: o nome único virou explícito (`section-10-<uuid>`), com a inbox vazia conferida antes e um comentário dizendo por que a linha prova que o use case rodou. Lição: achado de revisão é hipótese até ser conferido no código |
 | S7 | Fugiu do "testes primeiro" em duas partes: o teste do envelope do auditor saiu junto com o schema, sem a rodada vermelha, e os testes de integração do auditor foram escritos depois do `EventAuditor` | O próprio agente, no resumo da fatia | Compensado com mutação temporária, desfeita depois: com a checagem de ordem só por wallet (sem o tipo de evento), o teste da D20.1 e o da API ao auditor falham. O publisher, o use case do auditor, a config e o R-13-C6 tiveram a rodada vermelha antes do código |
 | S7 | A checagem de dono no `markPublished` da outbox (D20.5, `AND locked_by = ?`) não tinha teste: sem ela, todos os testes continuavam verdes. O teste do "processo morto" só provava o dono no `recordFailure`, porque ali a publicação de A falhava; o log "publicado com lease vencido" nunca rodava | `/revisar` em contexto limpo | Teste de integração com um SNS com portão: A faz o claim e para no SNS, o lease de 1 s vence, B pega o mesmo evento e para no SNS, e só então o Publish de A tem sucesso. O mark de A não marca nada (o evento fica com o dono B) e A loga o lease vencido; depois B marca. Provado por mutação temporária, desfeita depois: sem `AND locked_by = ?`, o teste falha (o evento aparece publicado, sem dono) |
+| S8 | Na D21.6, escreveu a conta do lease do worker como lote × (2 × `lock_timeout` + `statement_timeout`): com os padrões de hoje (10 × 9 s > 30 s), a própria validação recusaria a subida | O próprio agente, ao ler o código do worker antes de implementar | Texto da D21.6 corrigido antes do código para a conta já decidida na D18.2 (lote × `lock_timeout` < lease; a D18.10 cobre o lease vencido no meio do lote) |
+| S3/S8 | O `classifyError()` (S3) só tratava como transitório erro de banco com `code`. O `pg` lança `Error("Connection terminated unexpectedly")` **sem** `code` quando o Postgres para ou reinicia com conexões no pool: a API respondia `500 INTERNAL_ERROR`, contra a D5 ("banco fora → `503`") | Teste novo da S8 (F1, D21.7), com um Postgres próprio parado de verdade; confirmado com uma sonda isolada do `pg` | Lista fechada das mensagens de conexão perdida do `pg` (comparação exata, só em `Error` sem `code`) → transitório. Testes de unidade para cada mensagem e para um texto parecido que continua interno |
+| S8 | O teste do R-13-C6 com processos separados importava o prefixo `PUBLISH ` do próprio entrypoint de teste; o import rodava o `bootstrap()` dele **dentro** do processo do teste, um 3º publisher que publicava sem contar. Antes de achar a causa, o agente supôs perda de linhas no pipe | O teste falhou (só 25 a 30 dos 50 eventos contados); rodado fora do `bun test`, o mesmo cenário contava 50 | O prefixo foi para `test/support/processes.ts`, com um aviso no child para nunca ser importado. Da hipótese errada ficou só a escrita síncrona (`writeSync`), que continua necessária porque o processo é morto à força; a espera extra que tinha sido acrescentada saiu |
+| S8 | Para medir a base do R-13-C1, criou uma `git worktree` com um junction para o `node_modules` e a removeu com `git worktree remove --force`: o git seguiu o junction e apagou o conteúdo do `node_modules` do repositório | O próprio agente, ao conferir o `node_modules` depois da remoção | `bun install --frozen-lockfile` restaurou as mesmas versões. Pedido meu na revisão: o `test:proofs` (D21.8) desfaz o junction com `rmdir` num `finally`, antes de qualquer remoção; só apaga uma `copy-*` dentro de `<tmp>/wagering-proofs/`; aborta sem apagar se achar qualquer link na cópia; apaga arquivo por arquivo, nunca por remoção recursiva nem `git worktree remove`; e confere no fim que o `node_modules` não mudou. Testado com junctions de verdade em `test/unit/proofs-cleanup.spec.ts` |
 | | | | |
 
 ## Provas de que os testes protegem
 
-Resultado de `bun run test:proofs`, preenchido na S8:
+Resultado de `bun run test:proofs` (S8, 01/11/2026): **14/14**. Cada teste passa sem o patch e falha com ele, pelo motivo da última coluna. Patches em `proofs/`, manifesto em `proofs/manifest.ts`, mecanismo na D21.8.
 
-| Proteção removida | Teste que precisa falhar | Resultado |
-|---|---|---|
-| `FOR UPDATE` da wallet | R-13-C2 | |
-| Índice de uma reversão por referência | dupla reversão em paralelo | |
-| `CHECK` de saldo ≥ 0 | `UPDATE` direto com saldo negativo | |
-| Trigger append-only do ledger | `UPDATE` com o papel dono | |
-| `SKIP LOCKED` no claim do worker de pendentes | D4.3 D18.2: o segundo claim pula as linhas travadas sem esperar | |
-| `SKIP LOCKED` no claim da outbox (S7) | R-13-C6 D20.3: claim de A em andamento (cabeça travada) → B pula essa wallet sem esperar e não pega o 2º evento dela (o 1º teste do R-13-C6, o dos dois publishers em laço, não pega essa remoção) | |
-| Cutucada das pendentes (D4.4) | R-13-C7 (aplicado em < 2 s, com backoff de 4 s) | |
-| Desempate da D18.9 invertido | D18.9: a reversão criada primeiro é `PROCESSED` | |
-| Checagem do dono do lease (D18.10) | D18.10: lease vencido com o item em processamento → `attempts = 1` | |
-| Ack depois do commit | R-13-C5 | |
-| Inbox | mesma mensagem duas vezes | |
-| Trigger de cauda (saldo = último lançamento) | saldo alterado sem lançamento | |
-| Papel restrito do banco | `UPDATE` no ledger com o papel da app | |
+| # | Proteção removida | Teste que precisa falhar | Resultado |
+|---|---|---|---|
+| 1 | `FOR UPDATE` da wallet | R-13-C2: saldo 100.00, duas BETs de 80.00 esperando o mesmo lock | falhou: a 2ª não sai `REJECTED`; o lost update é barrado no banco e vira erro, não resposta de negócio |
+| 2 | Índice de uma reversão por referência | R-07-09 D1.1: duas reversões `PROCESSED` da mesma referência → `UNIQUE` (o teste em paralelo não pega: o lock da wallet protege antes) | falhou: o erro esperado (`23505` do índice) não vem |
+| 3 | `CHECK` de saldo ≥ 0 | R-05-09 R-06-25: saldo negativo → `CHECK` | falhou: quem recusa é outro trigger (`23000`), não o `CHECK` |
+| 4 | Trigger append-only do ledger | R-05-05 (P2, papel dono): `UPDATE` no ledger → trigger | falhou: o `UPDATE` cai num `CHECK` (`23514`), não no append-only |
+| 5 | `SKIP LOCKED` no claim do worker de pendentes | D4.3 D18.2: com um claim em andamento, o segundo pula as linhas sem esperar | falhou: o 2º claim espera e cai no `lock_timeout` |
+| 6 | `SKIP LOCKED` no claim da outbox (S7) | R-13-C6 D20.3: claim de A em andamento (cabeça travada) → B pula essa wallet sem esperar e não pega o 2º evento dela (o 1º teste do R-13-C6, o dos dois publishers em laço, não pega essa remoção) | falhou: B espera e cai no `lock_timeout` |
+| 7 | Cutucada das pendentes (D4.4) | D4.4: BET submetida → as pendentes da mesma wallet que a referenciam vencem agora | falhou: a pendente não vence |
+| 8 | Desempate da D18.9 invertido | D1.1 D1.3 D18.9: a reversão criada primeiro é `PROCESSED` | falhou: a mais nova vence |
+| 9 | Checagem do dono do lease (D18.10) | D18.10: lease vencido com o item em processamento → `attempts = 1` | falhou: `attempts = 2` |
+| 10 | Ack depois do commit | R-13-I2: falha no COMMIT → não há ack | falhou: a mensagem já foi apagada quando o commit falha |
+| 11 | Inbox | R-10-04 R-13-I3: a mesma mensagem duas vezes → a 2ª é duplicata da inbox | falhou: a 2ª passa como `processed` (só a key segura o efeito) |
+| 12 | Trigger de cauda (saldo = último lançamento) | R-06-21: saldo alterado sem lançamento → erro no COMMIT | falhou: o COMMIT passa |
+| 13 | Papel restrito do banco | D7.3: a app conecta com um papel que não é superusuário nem dono das tabelas | falhou: o papel é dono de 9 tabelas |
+| 14 | `AND locked_by = ?` no `markPublished` da outbox (D20.5) | D20.5: A publica depois de B pegar o lease → o mark de A não marca nada | falhou: o mark de A marca o evento que já era de B |
 
 ## O que eu fiz sem a IA
 

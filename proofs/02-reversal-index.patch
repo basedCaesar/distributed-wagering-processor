@@ -1,0 +1,28 @@
+diff --git a/migrations/index.ts b/migrations/index.ts
+--- a/migrations/index.ts
++++ b/migrations/index.ts
+@@ -12,3 +12,4 @@
+ import { Migration20261101000011_message_attempts_delete } from "./Migration20261101000011_message_attempts_delete";
+ import { Migration20261101000012_outbox_publisher_and_audit } from "./Migration20261101000012_outbox_publisher_and_audit";
++import { Migration20991231000001_proof } from "./Migration20991231000001_proof";
+
+@@ -27,3 +28,4 @@
+   Migration20261101000011_message_attempts_delete,
+   Migration20261101000012_outbox_publisher_and_audit,
++  Migration20991231000001_proof,
+ ].map((migration) => ({ name: migration.name, class: migration }));
+diff --git a/migrations/Migration20991231000001_proof.ts b/migrations/Migration20991231000001_proof.ts
+new file mode 100644
+--- /dev/null
++++ b/migrations/Migration20991231000001_proof.ts
+@@ -0,0 +1,10 @@
++import { Migration } from "@mikro-orm/migrations";
++
++/** Prova 2 (D21.8): remove a garantia de uma reversão PROCESSED por referência (D1.1). Só no banco descartável. */
++export class Migration20991231000001_proof extends Migration {
++  override name = "Migration20991231000001_proof";
++
++  override up(): void {
++    this.addSql("DROP INDEX wager_transactions_one_processed_reversal_uq;");
++  }
++}

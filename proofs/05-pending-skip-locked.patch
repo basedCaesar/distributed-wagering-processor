@@ -1,0 +1,10 @@
+diff --git a/src/modules/wagering/infra/persistence/pending-queue.ts b/src/modules/wagering/infra/persistence/pending-queue.ts
+--- a/src/modules/wagering/infra/persistence/pending-queue.ts
++++ b/src/modules/wagering/infra/persistence/pending-queue.ts
+@@ -18,5 +18,5 @@
+      ORDER BY next_attempt_at, created_at, id
+      LIMIT ?
+-     FOR UPDATE SKIP LOCKED
++     FOR UPDATE
+   ), claimed AS (
+     UPDATE wager_transactions t

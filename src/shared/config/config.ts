@@ -32,6 +32,18 @@ export function loadConfig(
       leaseMs: env.OUTBOX_LEASE_MS,
       snsRequestTimeoutMs: env.OUTBOX_SNS_REQUEST_TIMEOUT_MS,
     },
+    http: {
+      requestTimeoutMs: env.HTTP_REQUEST_TIMEOUT_MS,
+    },
+    dbApplicationName: env.DB_APPLICATION_NAME || undefined,
+    pending: {
+      leaseMs: env.PENDING_LEASE_MS,
+      batchSize: env.PENDING_BATCH_SIZE,
+    },
+    consumer: {
+      visibilityTimeoutSeconds: env.CONSUMER_VISIBILITY_TIMEOUT_S,
+      maxMessages: env.CONSUMER_MAX_MESSAGES,
+    },
   });
 
   if (!parsed.success) {

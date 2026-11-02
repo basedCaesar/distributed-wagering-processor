@@ -252,7 +252,8 @@ Se atrasar, os extras encolhem. O núcleo não.
   - o ack antes do commit;
   - a inbox;
   - o trigger de cauda;
-  - o papel restrito.
+  - o papel restrito;
+  - sem o `AND locked_by = ?` no `markPublished` da outbox (D20.5) → falha o teste da D20.5 em que A publica depois de B pegar o lease.
 
 ## S9 — Observabilidade
 

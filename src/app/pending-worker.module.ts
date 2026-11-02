@@ -12,7 +12,7 @@ import { SecretsModule } from "../shared/secrets/secrets.module";
     AppConfigModule,
     SecretsModule,
     LoggerModule,
-    ormModule(WAGERING_ENTITIES),
+    ormModule(WAGERING_ENTITIES, "pending-worker"),
     PendingWorkerModule,
   ],
 })

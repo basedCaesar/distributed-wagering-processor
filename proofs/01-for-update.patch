@@ -1,0 +1,9 @@
+diff --git a/src/modules/wagering/infra/persistence/mikro-orm-unit-of-work.ts b/src/modules/wagering/infra/persistence/mikro-orm-unit-of-work.ts
+--- a/src/modules/wagering/infra/persistence/mikro-orm-unit-of-work.ts
++++ b/src/modules/wagering/infra/persistence/mikro-orm-unit-of-work.ts
+@@ -225,5 +225,4 @@
+     async lockById(id) {
+       const record = await em.findOne(WalletSchema, id, {
+-        lockMode: LockMode.PESSIMISTIC_WRITE,
+       });
+       return record ? walletFromRecord(record) : undefined;

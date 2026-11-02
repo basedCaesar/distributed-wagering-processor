@@ -1,6 +1,7 @@
 import { Inject, Module, type OnModuleDestroy } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { Logger } from "pino";
+import { APP_CONFIG, type AppConfig } from "../../../../shared/config/config.module";
 import { LOGGER } from "../../../../shared/logger/logger.module";
 import {
   ID_GENERATOR,
@@ -34,9 +35,13 @@ class PendingWorkerShutdown implements OnModuleDestroy {
     },
     {
       provide: PendingWorker,
-      useFactory: (orm: MikroORM, useCase: ResolvePendingTransactionUseCase, logger: Logger) =>
-        new PendingWorker(new MikroOrmPendingQueue(orm), useCase, logger),
-      inject: [MikroORM, ResolvePendingTransactionUseCase, LOGGER],
+      // Lease e lote da config, validados juntos na subida (D18.2, D21.6).
+      useFactory: (config: AppConfig, orm: MikroORM, useCase: ResolvePendingTransactionUseCase, logger: Logger) =>
+        new PendingWorker(new MikroOrmPendingQueue(orm), useCase, logger, {
+          leaseMs: config.pending.leaseMs,
+          batchSize: config.pending.batchSize,
+        }),
+      inject: [APP_CONFIG, MikroORM, ResolvePendingTransactionUseCase, LOGGER],
     },
     PendingWorkerShutdown,
   ],

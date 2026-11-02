@@ -33,6 +33,9 @@ export interface TransactionBody {
   processedAt?: string;
 }
 
+/** O que os helpers usam da API: a do processo de teste ou a de um processo separado (D21.1). */
+export type ApiClient = Pick<TestApi, "request" | "issuer">;
+
 export interface TestWallet {
   id: string;
   playerId: string;
@@ -44,7 +47,7 @@ export const newExternalId = (prefix = "tx"): string => `${prefix}-${Bun.randomU
 
 /** Wallet criada pela API real (operator), com o saldo inicial dado. */
 export async function createWallet(
-  api: TestApi,
+  api: ApiClient,
   initialBalance: MoneyJson = brl("100.00"),
 ): Promise<TestWallet> {
   const response = await api.request("POST", "/wallets", {
@@ -86,7 +89,7 @@ export function wagerBody(
  * quando o teste passa outra.
  */
 export async function submit(
-  api: TestApi,
+  api: ApiClient,
   body: SubmissionInput,
   options: { key?: string | null; token?: string | null; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; body: SubmissionBody; headers: Headers }> {

@@ -1,0 +1,17 @@
+diff --git a/src/modules/wagering/infra/persistence/pending-queue.ts b/src/modules/wagering/infra/persistence/pending-queue.ts
+--- a/src/modules/wagering/infra/persistence/pending-queue.ts
++++ b/src/modules/wagering/infra/persistence/pending-queue.ts
+@@ -17,5 +17,5 @@
+        AND (locked_until IS NULL OR locked_until <= now())
+-     ORDER BY next_attempt_at, created_at, id
++     ORDER BY next_attempt_at, created_at DESC, id DESC
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+   ), claimed AS (
+@@ -27,5 +27,5 @@
+     RETURNING t.id, t.wallet_id, t.next_attempt_at, t.created_at
+   )
+-  SELECT id, wallet_id FROM claimed ORDER BY next_attempt_at, created_at, id`;
++  SELECT id, wallet_id FROM claimed ORDER BY next_attempt_at, created_at DESC, id DESC`;
+
+ export class MikroOrmPendingQueue implements PendingQueue {

@@ -1,0 +1,9 @@
+diff --git a/src/modules/wagering/application/resolve-pending-transaction.use-case.ts b/src/modules/wagering/application/resolve-pending-transaction.use-case.ts
+--- a/src/modules/wagering/application/resolve-pending-transaction.use-case.ts
++++ b/src/modules/wagering/application/resolve-pending-transaction.use-case.ts
+@@ -214,5 +214,4 @@
+     return undefined;
+   }
+-  if (pending.lockedBy !== claimed.leaseToken) return undefined;
+   return { wallet, pending };
+ }

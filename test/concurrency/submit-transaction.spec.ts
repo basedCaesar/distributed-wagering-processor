@@ -21,6 +21,11 @@ import {
 /** Pool padrão do `pg` por processo (D17.5). */
 const POOL_SIZE = 10;
 const PARALLEL = 50;
+/**
+ * 50 requisições serializadas no lock levam de 1,5 s a 3,9 s conforme a
+ * carga da máquina; perto dos 5 s padrão do bun (aprovado na S8).
+ */
+const SLOW_TEST_MS = 30_000;
 
 let api: TestApi;
 let observer: Client;
@@ -128,7 +133,7 @@ describe("S4 R-13-C1..C3 D3.6 D7.2: submissão concorrente", () => {
     expect(counted.unique_index).toBe(0);
     expect(counted.fast_path + counted.lock).toBe(PARALLEL - 1);
     expect(counted.lock).toBeGreaterThanOrEqual(POOL_SIZE - 1);
-  });
+  }, SLOW_TEST_MS);
 
   it("R-13-C2 R-08-03 R-08-09: saldo 100.00, duas BETs de 80.00 esperando o mesmo lock → 1 PROCESSED, 1 REJECTED INSUFFICIENT_FUNDS, saldo 20.00, 1 DEBIT", async () => {
     const wallet = await createWallet(api, brl("100.00"));

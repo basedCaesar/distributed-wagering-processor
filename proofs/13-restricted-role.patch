@@ -1,0 +1,11 @@
+diff --git a/.env.test b/.env.test
+--- a/.env.test
++++ b/.env.test
+@@ -6,4 +6,5 @@
+ DB_NAME=wagering_test
+-DB_USER=wagering_app
+-DB_PASSWORD=wagering_app
++# Prova 13 (D21.8): a app conecta com o papel dono.
++DB_USER=wagering_owner
++DB_PASSWORD=wagering_owner
+ # Papel dono: só as migrations o usam (D7.3)

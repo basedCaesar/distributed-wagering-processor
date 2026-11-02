@@ -1,0 +1,9 @@
+diff --git a/src/modules/wagering/infra/persistence/outbox-store.ts b/src/modules/wagering/infra/persistence/outbox-store.ts
+--- a/src/modules/wagering/infra/persistence/outbox-store.ts
++++ b/src/modules/wagering/infra/persistence/outbox-store.ts
+@@ -43,4 +43,4 @@
+   UPDATE outbox_messages
+      SET published_at = now(), locked_until = NULL, locked_by = NULL
+-   WHERE id IN (?) AND locked_by = ? AND published_at IS NULL
++   WHERE id IN (?) AND (locked_by = ? OR true) AND published_at IS NULL
+   RETURNING id`;

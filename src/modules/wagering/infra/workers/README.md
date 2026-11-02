@@ -8,7 +8,7 @@ Resolve as transações `PENDING_REFERENCE`. Entrypoint: `src/entrypoints/main-p
 
 | Arquivo | O que é |
 |---|---|
-| `pending-worker.ts` | O laço. Cada instância tem um `leaseToken` (UUIDv7), o dono dos leases dela (D18.10). A cada tick de 1 s: claim de até 10 com lease de 30 s, depois uma tentativa por item, em ordem. Com o lote cheio, vai direto para o próximo lote, sem esperar o tick. `runOnce()` faz um lote só (é o que os testes usam); `start()`/`stop()` controlam o laço. |
+| `pending-worker.ts` | O laço. Cada instância tem um `leaseToken` (UUIDv7), o dono dos leases dela (D18.10). A cada tick de 1 s: claim de até 10 com lease de 30 s (`PENDING_BATCH_SIZE` e `PENDING_LEASE_MS`, validados juntos na subida, D21.6), depois uma tentativa por item, em ordem. Com o lote cheio, vai direto para o próximo lote, sem esperar o tick. `runOnce()` faz um lote só (é o que os testes usam); `start()`/`stop()` controlam o laço. |
 | `pending-worker.module.ts` | Liga o use case, o claim e o laço; no shutdown, para o laço antes de o ORM fechar. |
 
 Fluxo de um item:

@@ -8,6 +8,6 @@ import { SecretsModule } from "../shared/secrets/secrets.module";
 
 /** Módulo raiz do processo `outbox-publisher` (D7.4, D9.6): sem HTTP. */
 @Module({
-  imports: [AppConfigModule, SecretsModule, LoggerModule, ormModule(WAGERING_ENTITIES), OutboxPublisherModule],
+  imports: [AppConfigModule, SecretsModule, LoggerModule, ormModule(WAGERING_ENTITIES, "outbox-publisher"), OutboxPublisherModule],
 })
 export class OutboxPublisherAppModule {}

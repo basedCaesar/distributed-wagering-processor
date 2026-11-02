@@ -1,0 +1,10 @@
+diff --git a/src/modules/wagering/infra/persistence/outbox-store.ts b/src/modules/wagering/infra/persistence/outbox-store.ts
+--- a/src/modules/wagering/infra/persistence/outbox-store.ts
++++ b/src/modules/wagering/infra/persistence/outbox-store.ts
+@@ -28,5 +28,5 @@
+      ORDER BY o.position
+      LIMIT ?
+-     FOR UPDATE OF o SKIP LOCKED
++     FOR UPDATE OF o
+   ), claimed AS (
+     UPDATE outbox_messages t

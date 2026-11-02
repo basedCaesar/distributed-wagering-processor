@@ -24,7 +24,7 @@ const DESCRIPTIONS: Record<number, string> = {
   403: "Token sem o papel exigido (FORBIDDEN)",
   404: "Recurso inexistente (NOT_FOUND)",
   409: "Conflito (WALLET_ALREADY_EXISTS, EXTERNAL_ID_CONFLICT, conflito de idempotência)",
-  503: "Falha transitória (TEMPORARILY_UNAVAILABLE), com Retry-After",
+  503: "Falha transitória (TEMPORARILY_UNAVAILABLE), com Retry-After: banco fora, lock com timeout ou prazo de 10 s da requisição esgotado (reenvie com a mesma Idempotency-Key)",
 };
 
 /** `503` sempre com `Retry-After` (D16.3). */

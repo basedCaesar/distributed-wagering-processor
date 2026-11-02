@@ -1,0 +1,11 @@
+diff --git a/src/modules/wagering/application/submit-wager-transaction.use-case.ts b/src/modules/wagering/application/submit-wager-transaction.use-case.ts
+--- a/src/modules/wagering/application/submit-wager-transaction.use-case.ts
++++ b/src/modules/wagering/application/submit-wager-transaction.use-case.ts
+@@ -158,5 +158,6 @@
+       // Ordem de locks: chave da inbox, wallet, linhas da mesma wallet (CLAUDE.md, D7.2).
+-      if (inbox) {
++      // Prova 11 (D21.8): a inbox nunca é registrada.
++      if (inbox && inbox.messageId === "\u0000") {
+         const registration = await tx.inbox.register(inbox);
+         if (registration === "conflict") throw new InboxConflictError();
+         if (registration === "duplicate") {

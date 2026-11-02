@@ -8,6 +8,6 @@ import { SecretsModule } from "../shared/secrets/secrets.module";
 
 /** Módulo raiz do processo `event-auditor` (D7.4, D9.7): sem HTTP. */
 @Module({
-  imports: [AppConfigModule, SecretsModule, LoggerModule, ormModule(WAGERING_ENTITIES), EventAuditorModule],
+  imports: [AppConfigModule, SecretsModule, LoggerModule, ormModule(WAGERING_ENTITIES, "event-auditor"), EventAuditorModule],
 })
 export class EventAuditorAppModule {}

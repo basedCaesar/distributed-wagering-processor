@@ -72,6 +72,19 @@ export async function createTestTopic(): Promise<TestTopic> {
   };
 }
 
+/** Assina mais uma fila no tópico do teste (ex.: a fila do auditor, com DLQ própria). */
+export async function subscribeQueue(topic: Pick<TestTopic, "topicArn">, queueUrl: string): Promise<void> {
+  const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["QueueArn"] }));
+  await sns.send(
+    new SubscribeCommand({
+      TopicArn: topic.topicArn,
+      Protocol: "sqs",
+      Endpoint: Attributes?.QueueArn,
+      Attributes: { RawMessageDelivery: "true" },
+    }),
+  );
+}
+
 export interface TestPublisher {
   publisher: OutboxPublisher;
   /** Linhas JSON que este publisher logou (logger próprio, só dele). */
