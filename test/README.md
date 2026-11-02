@@ -15,15 +15,18 @@ A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 ap
 
 ### Validação do clone limpo (aceite da S10)
 
-- **Data:** 02/11/2026, 20:26 (-03:00).
-- **Commit:** `21377a1` com as mudanças da correção da revisão da S10 aplicadas (o commit `fix: achados da revisão da S10 [S10]`).
-- **Passos:** `git clone` do repositório num diretório vazio; `bun install`; Compose desse clone derrubado com `-v` e **imagem `wagering-app:local` apagada**, para o `infra:up` construir do código do clone; `bun run infra:up`; `bun run acceptance` duas vezes seguidas; o serviço `seed` rodado de novo (`docker compose up seed --no-deps`).
+Validação final:
+- **Data:** 02/11/2026, 20:48 (-03:00).
+- **Commit:** `1d6c736` (`build: --build no infra:up [S10 D23.8]`), clonado sem nenhuma mudança local.
+- **Antes:** Compose do projeto derrubado e imagem `wagering-app:local` apagada.
+- **Passos, e só eles:** `git clone` numa pasta nova; `bun install`; `bun run infra:up` (construiu a imagem do código do clone); `bun run acceptance` duas vezes seguidas.
 - **Resultado:**
   - seed: "wallet do exemplo criada";
-  - 1ª aceitação: tudo ok, com `idempotentReplay: false` e "o consumidor processou msg-123 (linha da inbox gravada)";
-  - 2ª aceitação: tudo ok, com `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio";
-  - seed de novo: "a wallet do exemplo já existe; nada a fazer", saída 0.
-- **Atenção:** na 1ª tentativa desta validação, o `infra:up` ainda era `docker compose up -d`, sem `--build`, e reaproveitou uma `wagering-app:local` antiga da máquina: o seed antigo falhou ao rodar de novo. Desde a D23.8, o `infra:up` usa `--build`.
+  - 1ª aceitação: saída 0, tudo ok, com `idempotentReplay: false` e "o consumidor processou msg-123 (linha da inbox gravada)";
+  - 2ª aceitação: saída 0, tudo ok, com `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio… não prova um novo processamento".
+- **Depois:** `docker compose down -v` no clone. A pasta foi apagada depois de conferir que não tinha link nem junction.
+
+Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplicadas, às 20:26 (aceitação duas vezes e o `seed` rodado de novo: "nada a fazer", saída 0). Na 1ª tentativa dessa validação, o `infra:up` ainda era `docker compose up -d`, sem `--build`. Ele reaproveitou uma `wagering-app:local` antiga da máquina, e o seed antigo falhou ao rodar de novo. Por isso o `infra:up` passou a usar `--build` (D23.8).
 
 ## Regras (CLAUDE.md, D11.4)
 
