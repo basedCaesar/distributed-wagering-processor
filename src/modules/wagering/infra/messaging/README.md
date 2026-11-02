@@ -75,6 +75,7 @@ flowchart TD
 - **Visibilidade e lote configuráveis** (D21.6): `CONSUMER_VISIBILITY_TIMEOUT_S` e `CONSUMER_MAX_MESSAGES`, com a conta abaixo validada na subida; os padrões são 120 s e 10. Só os testes de reinício (R-13-C8) usam valores curtos.
 - **Ordem por grupo** (D19.6): a visibilidade de 120 s cobre o pior caso de um lote de um grupo (10 × (2 s de `lock_timeout` + 5 s de `statement_timeout`) = 70 s, mais a repetição da D3.6). Se uma mensagem fica na fila (retry), as seguintes do grupo no lote voltam com visibilidade 0 sem processar; o FIFO só as entrega de novo depois da primeira. A correção não depende de ordem (D8.1).
 - **SQS fora** (D19.10): o laço espera entre receives que falham (1 s a 30 s), sem rajada de CPU e de log.
+- **Prazo que falha de verdade** (D21.12): `createSqsClient` dá 5 s a `DeleteMessage`, `ChangeMessageVisibility` e ao `SendMessage` da DLQ, com `throwOnRequestTimeout` (sem ele, o SDK só avisa e a chamada nunca termina) e uma tentativa por chamada. O `ReceiveMessage` passa o prazo dele por chamada: long poll + 5 s, para nunca ser cortado. Um SQS que aceita a conexão e não responde vira `TimeoutError`, tratado como as outras falhas: `test/integration/messaging/sqs-timeout.spec.ts`.
 
 ## SIGTERM (R-10-08, D8.5, D19.9)
 

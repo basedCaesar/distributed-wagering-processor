@@ -8,6 +8,7 @@ import {
   type ReceiveMessageCommandOutput,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
+import { receiveTimeoutMs } from "../../../../shared/aws/sqs-client";
 
 export type SqsCommand =
   | ReceiveMessageCommand
@@ -15,9 +16,14 @@ export type SqsCommand =
   | ChangeMessageVisibilityCommand
   | SendMessageCommand;
 
+/** Opções por chamada do SDK: o receive passa o prazo do long poll (D21.12). */
+export interface SqsSendOptions {
+  requestTimeout?: number;
+}
+
 /** O pedaço do `SQSClient` que o consumidor usa; os testes o decoram para injetar falhas. */
 export interface SqsSender {
-  send(command: SqsCommand): Promise<unknown>;
+  send(command: SqsCommand, options?: SqsSendOptions): Promise<unknown>;
 }
 
 /** Atributo de mensagem como o produtor mandou: tipo e valor. */
@@ -63,7 +69,11 @@ export class SqsWagerQueue {
     private readonly urls: { queueUrl: string; dlqUrl: string },
   ) {}
 
-  /** Nunca abortado: um receive abortado continua aberto no servidor (D19.9). */
+  /**
+   * Nunca abortado: um receive abortado continua aberto no servidor (D19.9).
+   * O prazo dele é o long poll + margem, não o dos comandos curtos (D21.12):
+   * só um SQS que não responde passa dele.
+   */
   async receive(options: ReceiveOptions): Promise<QueueMessage[]> {
     const output = (await this.client.send(
       new ReceiveMessageCommand({
@@ -78,6 +88,7 @@ export class SqsWagerQueue {
           "ApproximateReceiveCount",
         ],
       }),
+      { requestTimeout: receiveTimeoutMs(options.waitTimeSeconds) },
     )) as ReceiveMessageCommandOutput;
     return (output.Messages ?? []).map(toQueueMessage);
   }
