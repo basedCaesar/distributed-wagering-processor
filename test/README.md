@@ -11,6 +11,20 @@
 
 `bun run check` roda typecheck, lint, unidade, `migration:verify`, integração, concorrência e e2e. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
 
+A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 api, consumidores, Keycloak, seed), que o `check` não sobe. Vai rodar no CI, o primeiro extra (D23.7).
+
+### Validação do clone limpo (aceite da S10)
+
+- **Data:** 02/11/2026, 20:26 (-03:00).
+- **Commit:** `21377a1` com as mudanças da correção da revisão da S10 aplicadas (o commit `fix: achados da revisão da S10 [S10]`).
+- **Passos:** `git clone` do repositório num diretório vazio; `bun install`; Compose desse clone derrubado com `-v` e **imagem `wagering-app:local` apagada**, para o `infra:up` construir do código do clone; `bun run infra:up`; `bun run acceptance` duas vezes seguidas; o serviço `seed` rodado de novo (`docker compose up seed --no-deps`).
+- **Resultado:**
+  - seed: "wallet do exemplo criada";
+  - 1ª aceitação: tudo ok, com `idempotentReplay: false` e "o consumidor processou msg-123 (linha da inbox gravada)";
+  - 2ª aceitação: tudo ok, com `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio";
+  - seed de novo: "a wallet do exemplo já existe; nada a fazer", saída 0.
+- **Atenção:** o `infra:up` é `docker compose up -d`, sem `--build`. Com uma imagem `wagering-app:local` antiga na máquina, ele roda o código antigo. Na 1ª tentativa desta validação foi o que aconteceu, e o seed antigo falhou ao rodar de novo.
+
 ## Regras (CLAUDE.md, D11.4)
 
 - O nome do teste cita o requisito e/ou a decisão (`R-…`, `D…`).

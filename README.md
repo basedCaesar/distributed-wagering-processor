@@ -30,7 +30,7 @@ O `bun run acceptance` espera a api ficar pronta (até 3 min), pede os tokens ao
 - a mensagem do §10, literal, só com `--message-group-id`;
 - as consultas e a reconciliação.
 
-Cada passo é conferido, e qualquer divergência faz o comando sair com erro. Pode rodar de novo: o resultado é o mesmo, com `idempotentReplay: true` (D23.6).
+Cada passo é conferido, e qualquer divergência faz o comando sair com erro. O §10 é conferido pela linha da inbox do consumidor (`msg-123`), consultada com o papel da app dentro do container do Postgres. Pode rodar de novo: o resultado é o mesmo, com `idempotentReplay: true`, e o §10 avisa que a inbox já tinha a mensagem, sem afirmar um novo processamento (D23.6). `ACCEPTANCE_API_URL` e `ACCEPTANCE_KEYCLOAK_URL` trocam os hosts, se precisar (D23.7). A aceitação fica fora do `bun run check`, porque precisa do Compose de dev completo.
 
 ## Comandos
 
@@ -114,7 +114,11 @@ A BET do §9 e a mensagem do §10 usam a wallet `0192f291-27dd-7d3f-8071-5f8685d
 - a **criação literal** do §9 devolve `409 WALLET_ALREADY_EXISTS` com esse `walletId`. É o conflito que o §9 pede para "wallet duplicada para o mesmo `playerId` + `currency`";
 - a **BET** e o **§10** funcionam como estão escritos.
 
-O seed existe só no Compose de dev, e rodá-lo de novo não faz nada.
+O seed existe só no Compose de dev, e rodá-lo de novo não faz nada. Se o banco já tiver uma wallet desse player com **outro** id (por exemplo, criada pelo `curl` do §9 num volume antigo), o seed falha com `SEED_EXAMPLE_WALLET_MISMATCH` e a api não sobe. Para recomeçar com o banco limpo:
+
+```bash
+bun run infra:down -v && bun run infra:up
+```
 
 ### §9 Criar wallet
 

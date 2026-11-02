@@ -175,6 +175,21 @@ describe("D23: Keycloak e seed no Compose", () => {
     expect(testServices.seed).toBeUndefined();
   });
 
+  it("D23.1 D23.3: as 3 api esperam o seed concluído e o keycloak saudável; o seed espera o migrate concluído", () => {
+    const apis = processServices().filter(([, , entry]) => entry === "main-api.ts");
+    expect(apis.length).toBe(3);
+    for (const [name, service] of apis) {
+      const deps = (service.depends_on ?? {}) as Record<string, { condition?: string }>;
+      expect({ name, seed: deps.seed?.condition, keycloak: deps.keycloak?.condition }).toEqual({
+        name,
+        seed: "service_completed_successfully",
+        keycloak: "service_healthy",
+      });
+    }
+    const seedDeps = (services.seed?.depends_on ?? {}) as Record<string, { condition?: string }>;
+    expect(seedDeps.migrate?.condition).toBe("service_completed_successfully");
+  });
+
   it("D23.3 D23.5: o Keycloak de teste publica a 8081 com KC_HOSTNAME = E2E_KEYCLOAK_URL do .env.test", async () => {
     const keycloak = testServices.keycloak_test;
     expect(keycloak?.ports?.map((p) => String(p.published))).toEqual(["8081"]);

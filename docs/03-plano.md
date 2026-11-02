@@ -288,6 +288,8 @@ Se atrasar, os extras encolhem. O núcleo não.
 - o `ARCHITECTURE.md` cobre cada item da seção "O que precisa ser documentado" do `01-requisitos.md`;
 - tag `v1.0-core`.
 
+**Situação (02/11/2026, correção da revisão da S10):** a tag `v1.0-core` fica para depois, **de propósito** (decisão minha); é o único aceite em aberto. O clone limpo foi validado (registro no `test/README.md` e no `AI_WORKFLOW.md`). A aceitação fica fora do `check` e vai rodar no CI, primeiro extra (D23.7).
+
 ---
 
 ## Depois do núcleo: extras
