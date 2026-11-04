@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import type { Logger } from "pino";
-import {
-  OUTBOX_ALERT_AFTER_ATTEMPTS,
-  outboxBackoffSeconds,
-  isOutboxStalled as stalled,
-} from "../../../src/modules/wagering/domain/outbox-message";
 import { OUTBOX_POLICY } from "../../../src/modules/wagering/infra/outbox/outbox-policy";
 import {
   type ClaimedEvent,
@@ -26,8 +21,11 @@ const event = (id: string, attempts = 0): ClaimedEvent => ({
   nextAttemptAt: T0,
 });
 
-/** Store em memória que registra cada chamada, na ordem. */
-function fakeStore(claims: ClaimedEvent[][]) {
+/**
+ * Store em memória que registra cada chamada, na ordem. `recorded` é o
+ * `attempts` que o `UPDATE` do dono devolve; por padrão, o do claim + 1.
+ */
+function fakeStore(claims: ClaimedEvent[][], recorded = (claimed: number) => claimed + 1) {
   const calls: string[] = [];
   const failures: { id: string; errorCode: string; backoffSeconds: number }[] = [];
   let round = 0;
@@ -44,7 +42,7 @@ function fakeStore(claims: ClaimedEvent[][]) {
       calls.push(`failure(${id})`);
       failures.push({ id, ...failure });
       const claimed = claims.flat().find((e) => e.id === id);
-      return (claimed?.attempts ?? 0) + 1;
+      return recorded(claimed?.attempts ?? 0);
     },
   };
   return { store, calls, failures };
@@ -68,22 +66,10 @@ function publisherWith(store: OutboxStore, sns: EventPublisher, options = {}) {
   return { publisher, lines, stalled: () => stalledCount };
 }
 
-describe("D9.6 D20.4: política do publisher", () => {
+// Backoff e alerta são regras do `OutboxMessage`: test/unit/domain/outbox-message.spec.ts (D24.2).
+describe("D9.6 D20.3: política do publisher", () => {
   it("D9.6: lote de 50, lease de 30 s; D20.3: claim vazio espera 500 ms", () => {
     expect(OUTBOX_POLICY).toMatchObject({ batchSize: 50, leaseMs: 30_000, idleMs: 500 });
-  });
-
-  it("D20.4: backoff de 2ⁿ s pela tentativa que falhou, até 300 s", () => {
-    expect([1, 2, 3, 4, 5, 8].map((n) => outboxBackoffSeconds(n))).toEqual([2, 4, 8, 16, 32, 256]);
-    expect(outboxBackoffSeconds(9)).toBe(300);
-    expect(outboxBackoffSeconds(40)).toBe(300);
-  });
-
-  it("D9.6 D20.4: alerta a partir da 20ª tentativa", () => {
-    expect(OUTBOX_ALERT_AFTER_ATTEMPTS).toBe(20);
-    expect(stalled(19)).toBe(false);
-    expect(stalled(20)).toBe(true);
-    expect(stalled(57)).toBe(true);
   });
 });
 
@@ -144,6 +130,35 @@ describe("R-11-02 D9.6: uma rodada do publisher", () => {
       "evento da outbox sem publicar depois de 20 tentativas; continua tentando",
       "evento da outbox sem publicar depois de 20 tentativas; continua tentando",
     ]);
+  });
+
+  it("D24.4: o alerta segue o domínio (tentativas do claim + 1), não o número que o UPDATE devolve", async () => {
+    // O claim diz 19 falhas (o domínio chega a 20: alerta), o UPDATE devolve 3;
+    // o claim diz 5 (o domínio chega a 6: sem alerta), o UPDATE devolve 40.
+    const recorded = new Map([
+      [19, 3],
+      [5, 40],
+    ]);
+    const { store } = fakeStore([[event("domain-stalled", 19)], [event("domain-ok", 5)]], (claimed) => {
+      const value = recorded.get(claimed);
+      if (value === undefined) throw new Error(`claim inesperado: ${claimed}`);
+      return value;
+    });
+    const { publisher, lines, stalled: stalledCount } = publisherWith(store, {
+      async publish() {
+        throw new Error("SNS recusou");
+      },
+    });
+
+    await publisher.runOnce();
+    expect(stalledCount()).toBe(1);
+    expect(lines.filter((l) => l.level === "error").map((l) => l.msg)).toEqual([
+      "evento da outbox sem publicar depois de 20 tentativas; continua tentando",
+    ]);
+
+    await publisher.runOnce();
+    expect(stalledCount()).toBe(1);
+    expect(lines.filter((l) => l.level === "error")).toHaveLength(1);
   });
 
   it("D20.4: abaixo de 20 tentativas não há alerta", async () => {

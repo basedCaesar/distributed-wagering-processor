@@ -160,7 +160,7 @@ Todos com o papel da app, menos os marcados "dono": com a app, o privilégio rec
 
 Os triggers diferidos (cauda e D15.9) conferem no `COMMIT` e releem as linhas, porque transação, lançamento e saldo são gravados em comandos separados. Os triggers levantam SQLSTATE `23000` com o nome da garantia em `constraint`, como as constraints nativas.
 
-Mapeamento (valor além de 2^53 centavos exato, `version` sem incremento do ORM, `correlation_id` gravado no `INSERT`, prazos da conexão): `test/integration/persistence/orm-mapping.spec.ts` e `test/unit/persistence/`.
+Mapeamento (valor além de 2^53 centavos exato, `version` sem incremento do ORM, `correlation_id` gravado no `INSERT`, prazos da conexão): `test/integration/persistence/orm-mapping.spec.ts` e `test/unit/persistence/`. O `now()` lido uma vez por transação, mesmo com várias chamadas, e de novo na transação seguinte (D24.5): `test/unit/persistence/unit-of-work-now.spec.ts`. O horário da inbox e a ordem de locks do registro: `test/integration/messaging/inbox.spec.ts`.
 
 ## Migrations
 

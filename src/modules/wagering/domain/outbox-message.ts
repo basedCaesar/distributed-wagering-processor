@@ -7,16 +7,14 @@ export const OUTBOX_BACKOFF_MAX_SECONDS = 300;
 /** A partir desta tentativa, cada falha é um alerta; o evento nunca é descartado (D9.6, D20.4). */
 export const OUTBOX_ALERT_AFTER_ATTEMPTS = 20;
 
-/** Com 2⁹ = 512 s o teto já valeu: não calcula potências maiores. */
+/** 2⁸ = 256 s é a última potência abaixo do teto de 300 s; 2⁹ = 512 s já passa dele. */
 const BACKOFF_EXPONENT_CAP = 9;
 
 /** 2ⁿ s, n = a tentativa que acabou de falhar (começa em 1), até o teto (D20.4). */
 export function outboxBackoffSeconds(attempt: number): number {
+  // Teto pelo expoente: o domínio não usa as funções numéricas globais (CLAUDE.md, lint).
   if (attempt >= BACKOFF_EXPONENT_CAP) return OUTBOX_BACKOFF_MAX_SECONDS;
-  // Teto por comparação: o domínio não usa as funções numéricas globais (CLAUDE.md, lint).
-  const seconds = 2 ** attempt;
-  if (seconds > OUTBOX_BACKOFF_MAX_SECONDS) return OUTBOX_BACKOFF_MAX_SECONDS;
-  return seconds;
+  return 2 ** attempt;
 }
 
 /** O evento já falhou `attempts` vezes: alerta, sem nunca descartar (D9.6, D20.4). */

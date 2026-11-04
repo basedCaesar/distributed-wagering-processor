@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConnectionException } from "@mikro-orm/core";
-import { InvalidMoneyError } from "../../../src/modules/wagering/domain/domain-error";
+import {
+  InvalidInboxTransitionError,
+  InvalidMoneyError,
+  InvalidOutboxTransitionError,
+} from "../../../src/modules/wagering/domain/domain-error";
 import {
   ConflictError,
   ForbiddenError,
@@ -126,6 +130,17 @@ describe("S3 D5 D16.2: classifyError", () => {
     expect(classifyError(new InvalidMoneyError("x"))).toMatchObject({
       category: "internal",
       httpStatus: 500,
+    });
+  });
+
+  it.each([
+    ["InvalidInboxTransitionError", new InvalidInboxTransitionError("mensagem m já processada")],
+    ["InvalidOutboxTransitionError", new InvalidOutboxTransitionError("evento e já publicado")],
+  ])("D24.1 D24.2: %s (transição inválida da inbox/outbox) é erro interno → 500", (_name, error) => {
+    expect(classifyError(error)).toMatchObject({
+      category: "internal",
+      httpStatus: 500,
+      code: "INTERNAL_ERROR",
     });
   });
 

@@ -471,7 +471,8 @@ function outboxWriter(em: EntityManager): OutboxWriter {
           payload: message.payload,
           occurredAt: message.occurredAt,
           attempts: message.attempts,
-          // `enqueue` nasce vencido: o `nextAttemptAt` é o `occurredAt`.
+          // `enqueue` sempre preenche o `nextAttemptAt` (= `occurredAt`, nasce
+          // vencido); o `??` só existe porque o tipo admite `undefined` (linha reidratada).
           nextAttemptAt: message.nextAttemptAt ?? message.occurredAt,
         });
       }

@@ -169,6 +169,7 @@ export class OutboxPublisher {
     const now = new Date();
     message.scheduleRetry(now);
     const attempt = message.attempts;
+    // `scheduleRetry` sempre preenche o `nextAttemptAt`; o `??` só existe porque o tipo admite `undefined`.
     const backoffSeconds = ((message.nextAttemptAt?.getTime() ?? now.getTime()) - now.getTime()) / 1000;
     const fields = { eventId: event.id, eventType: event.eventType, category, code: errorCode, attempt, backoffSeconds };
     let attempts: number | undefined;
