@@ -6,8 +6,9 @@ Processo `outbox-publisher` (R-11-02, R-11-03, D9, D20). Lê `outbox_messages` e
 
 | Arquivo | O que é | Regras |
 |---|---|---|
-| `outbox-policy.ts` | Valores (lote de 50 cabeças, lease de 30 s, espera de 500 ms depois de um claim vazio, teto de 300 s, alerta a partir de 20 tentativas) e funções puras: backoff 2ⁿ s e "passou do limite". | D9.6, D20.3, D20.4 |
-| `outbox-publisher.ts` | O laço (`runOnce`, `start`, `stop`): claim, publicação do lote em paralelo, marcação só do que o SNS confirmou, falha gravada com backoff. Nunca descarta. | R-11-02 · D9.6, D20.3–20.5 |
+| `../../domain/outbox-message.ts` | `OutboxMessage` (§6.5): `enqueue(event, orderingKey)`, `rehydrate`, `isPending`, `isDue`, `markPublished`, `scheduleRetry` e `isStalled`. O backoff de 2ⁿ s até 300 s e o alerta a partir de 20 tentativas moram aqui. Publicar ou reagendar um evento já publicado é erro de domínio. | §6.5 · D9.6, D20.4, D24 |
+| `outbox-policy.ts` | Valores operacionais: lote de 50 cabeças, lease de 30 s, espera de 500 ms depois de um claim vazio. | D9.6, D20.3 |
+| `outbox-publisher.ts` | O laço (`runOnce`, `start`, `stop`): claim, publicação do lote em paralelo, marcação só do que o SNS confirmou, falha gravada com backoff. Na falha, reidrata o `OutboxMessage`, chama `scheduleRetry` e passa ao SQL só o atraso. Nunca descarta. | R-11-02 · D9.6, D20.3–20.5, D24 |
 | `sns-event-publisher.ts` | `Publish` com o envelope como está no `jsonb`, `MessageGroupId = walletId`, `MessageDeduplicationId = eventId`. | D9.1, D20.9 |
 | `outbox-publisher.module.ts` | Cliente SNS com timeout menor que o lease (`SNS_CLIENT`), quem faz o `Publish` (`SNS_SENDER`, por padrão o próprio cliente; o teste de processos separados troca só ele, D21.4), ARN do tópico pelo nome, o laço e o shutdown antes de o ORM fechar. | D7.4, D8.6, D20.5, D21.4 |
 | `../persistence/outbox-store.ts` | O SQL: claim por cabeça de wallet, marcar como publicado e gravar a falha, os dois só para o dono do lease. | D9.2, D9.6, D20.3, D20.5 |
@@ -23,6 +24,32 @@ Processo `outbox-publisher` (R-11-02, R-11-03, D9, D20). Lê `outbox_messages` e
 Com algo pego, a próxima rodada sai na hora; claim vazio → espera de 500 ms. O `stop()` termina a rodada atual e interrompe a espera; os leases dos outros vencem sozinhos (D8.6).
 
 **Por que o timeout do SNS é menor que o lease (D20.5).** O cliente SNS tem `requestTimeout` de 10 s e uma tentativa por chamada (a repetição é do publisher). Pior caso de uma rodada: claim + publicação do lote em paralelo (≤ 10 s) + marcações (≤ 5 s de `statement_timeout`) ≈ 15 s, abaixo dos 30 s do lease. Com os 3 `maxAttempts` padrão do SDK, uma chamada lenta chegaria a 30 s, o lease venceria e outra instância publicaria de novo em condição normal. A config recusa `OUTBOX_SNS_REQUEST_TIMEOUT_MS >= OUTBOX_LEASE_MS`. O cliente usa `throwOnRequestTimeout: true`: sem ele, o `@smithy/node-http-handler` só avisa quando o prazo estoura, e um SNS que aceita a conexão e não responde prendia o publisher para sempre (`test/integration/outbox/sns-timeout.spec.ts`). Cada instância loga o `leaseToken` na subida ("outbox-publisher iniciado"), o que liga um `locked_by` da outbox a ela.
+
+## Estados de um evento na outbox (§6.5, D24, D13.4)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pendente: OutboxMessage.enqueue(event, walletId)<br/>na transação do use case
+    Pendente --> Pendente: scheduleRetry(now)<br/>attempts + 1, próxima em 2ⁿ s (até 300 s)
+    Pendente --> Publicado: markPublished(at)<br/>depois de o SNS confirmar
+    Publicado --> [*]
+    note right of Pendente
+        isStalled() a partir de 20 tentativas:
+        alerta, mas continua tentando (D9.6)
+    end note
+    note right of Publicado
+        markPublished ou scheduleRetry aqui
+        → InvalidOutboxTransitionError
+    end note
+```
+
+A classe guarda o estado e as transições. O que precisa valer entre instâncias fica no SQL de `outbox-store.ts`:
+- o claim por cabeça de wallet com `SKIP LOCKED`;
+- o lease e o dono (`locked_by`);
+- o filtro de vencidos;
+- o relógio (`now()` do banco, D18.12).
+
+O publisher grava a falha com `now() + atraso`, e o atraso é o que o `scheduleRetry` calculou. O `isDue` tem teste, mas a infra não o chama: o filtro entre instâncias é o do claim. A marcação como publicado também é só SQL (`published_at IS NULL` e dono, D20.5).
 
 ## A outbox com queda do processo (R-11-03, D13.4)
 
@@ -55,7 +82,7 @@ Se A voltar depois disso com a resposta (ou o erro) do SNS, a marcação e a fal
 ## Garantias
 
 - **Nada antes do commit** (R-05-04): o publisher só enxerga linhas commitadas; os use cases não têm acesso ao SNS. Isso é estrutural (D20.10): o lint proíbe `@aws-sdk/*` e `infra/` em `application/`, e `test/unit/outbox-only-exit.spec.ts` confere que nada de `application/` cita o SNS, o `OutboxPublisher` ou o `EventPublisher` e que só o publisher importa o SNS. A única saída de um evento é a linha da outbox.
-- **Claim indexado**: a CTE `heads` usa o índice parcial `outbox_messages_unpublished_ix` em `(ordering_key, position) WHERE published_at IS NULL` (S2): o custo segue o número de eventos não publicados, não o tamanho da tabela (`EXPLAIN`: `Bitmap Index Scan on outbox_messages_unpublished_ix`).
+- **Claim indexado**: a CTE `heads` usa o índice parcial `outbox_messages_unpublished_ix` em `(ordering_key, position) WHERE published_at IS NULL`, criado na migration de mensageria: o custo segue o número de eventos não publicados, não o tamanho da tabela (`EXPLAIN`: `Bitmap Index Scan on outbox_messages_unpublished_ix`).
 - **Nunca descarta** (D9.6): não há DLQ da outbox nem limite de tentativas; depois de 20, alerta e continua.
 - **Dois publishers** (R-11-02, R-13-C6): o `SKIP LOCKED` e o lease impedem que os dois peguem a mesma cabeça; em condições normais, cada evento sai uma vez. Depois de um lease vencido, uma publicação dupla é possível e segura (a inbox do consumidor).
 - **Ordem por wallet** (D9.2): só a cabeça sai; um evento em backoff segura os seguintes da mesma wallet (a alternativa descartada da D9.2).
@@ -71,7 +98,7 @@ Se A voltar depois disso com a resposta (ou o erro) do SNS, a marcação e a fal
 | `test/integration/outbox/atomicity.spec.ts` | R-13-I2: falha no COMMIT (trigger diferido, só para a wallet do teste, apagado num `finally`, D20.7) depois de gravar transação, ledger, saldo, outbox e inbox → nada fica e não há ack; sem a falha, tudo fica |
 | `test/integration/outbox/event-auditor.spec.ts` | transitório (inbox travada, `lock_timeout`) → `message_attempts` com `consumer_name = event-auditor` e, na 8ª falha, DLQ do auditor com a mensagem intacta (D20.2); da API ao auditor: BETs → outbox → publisher → SNS → auditor, tudo auditado na ordem da outbox, nenhum fora de ordem |
 | `test/integration/outbox/processes.spec.ts` | o `OutboxPublisherAppModule` resolve o tópico pelo nome, publica e, no shutdown, o `stop()` termina antes de o ORM fechar (falha sem o hook) |
-| `test/concurrency/outbox-publisher.spec.ts` | R-13-C6: dois publishers em laço, 10 wallets × 5 eventos → cada `eventId` publicado uma vez, contado no cliente SNS antes da deduplicação (D20.6), e em ordem de `walletVersion` por wallet; claim de A em andamento → B pula a wallet sem esperar e não pega o 2º evento dela (sem o `SKIP LOCKED`, o claim de B cai no `lock_timeout`: é a prova da S8). O 1º teste não pega a remoção do `SKIP LOCKED` (o Postgres reavalia o lease depois da espera). Na S7 os dois publishers ficam no mesmo processo, com pools separados; em processos separados, na S8 (D20.6) |
+| `test/concurrency/outbox-publisher.spec.ts` | R-13-C6: dois publishers em laço, 10 wallets × 5 eventos → cada `eventId` publicado uma vez, contado no cliente SNS antes da deduplicação (D20.6), e em ordem de `walletVersion` por wallet; claim de A em andamento → B pula a wallet sem esperar e não pega o 2º evento dela (sem o `SKIP LOCKED`, o claim de B cai no `lock_timeout`: é a prova 06 de `proofs/`). O 1º teste não pega a remoção do `SKIP LOCKED` (o Postgres reavalia o lease depois da espera). Aqui os dois publishers ficam no mesmo processo, com pools separados; com processos separados, em `test/concurrency/outbox-processes.spec.ts` (D20.6, D21.4) |
 
 Provado por mutação temporária, desfeita depois: sem o `SKIP LOCKED`, o teste do claim travado falha; sem a cabeça por wallet, 5 testes de ordem falham; sem a checagem do dono, o teste do publisher morto falha.
 

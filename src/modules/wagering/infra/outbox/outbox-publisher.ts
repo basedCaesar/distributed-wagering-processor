@@ -2,18 +2,27 @@ import type { Logger } from "pino";
 import { classifyError } from "../../../../shared/errors/classify-error";
 import { runWithContext } from "../../../../shared/logger/request-context";
 import { wageringRetriesTotal } from "../../../../shared/metrics/metrics";
-import { OUTBOX_POLICY, type OutboxPolicy, outboxBackoffSeconds, stalled } from "./outbox-policy";
+import { OUTBOX_ALERT_AFTER_ATTEMPTS, OutboxMessage } from "../../domain/outbox-message";
+import { OUTBOX_POLICY, type OutboxPolicy } from "./outbox-policy";
 
 /** Evento pego pelo claim: a cabeça não publicada de uma wallet (D20.3). */
 export interface ClaimedEvent {
   id: string;
+  aggregateId: string;
   /** `walletId` (D9.3): o `MessageGroupId` no SNS (D9.1). */
   orderingKey: string;
   eventType: string;
   /** O envelope do §11, como está no `jsonb` (D20.9). */
   payload: Record<string, unknown>;
+  occurredAt: Date;
   /** Falhas anteriores (D9.6). */
   attempts: number;
+  nextAttemptAt: Date;
+}
+
+/** A linha pega pelo claim, como `OutboxMessage` (D24): ainda não publicada. */
+function messageOf(event: ClaimedEvent): OutboxMessage {
+  return OutboxMessage.rehydrate({ ...event, publishedAt: undefined });
 }
 
 /**
@@ -153,8 +162,14 @@ export class OutboxPublisher {
   }
 
   private async recordFailure(event: ClaimedEvent, errorCode: string, category: string): Promise<void> {
-    const attempt = event.attempts + 1;
-    const backoffSeconds = outboxBackoffSeconds(attempt, this.policy.backoffMaxSeconds);
+    // O domínio decide tentativa e backoff (D20.4, D24). Só o atraso vai ao
+    // SQL, que grava `now() + atraso` com o relógio do banco (D18.12): o
+    // `now` daqui nunca é gravado.
+    const message = messageOf(event);
+    const now = new Date();
+    message.scheduleRetry(now);
+    const attempt = message.attempts;
+    const backoffSeconds = ((message.nextAttemptAt?.getTime() ?? now.getTime()) - now.getTime()) / 1000;
     const fields = { eventId: event.id, eventType: event.eventType, category, code: errorCode, attempt, backoffSeconds };
     let attempts: number | undefined;
     try {
@@ -171,11 +186,12 @@ export class OutboxPublisher {
     }
     // Falha registrada com backoff: um retry do publisher (D22.3).
     wageringRetriesTotal.inc({ component: "outbox_publisher" });
-    if (stalled(attempts, this.policy.alertAfterAttempts)) {
+    // O dono gravou `attempts + 1` (D20.5): o mesmo valor do domínio.
+    if (message.isStalled()) {
       this.alerts.countStalled();
       this.logger.error(
         { ...fields, attempts },
-        `evento da outbox sem publicar depois de ${this.policy.alertAfterAttempts} tentativas; continua tentando`,
+        `evento da outbox sem publicar depois de ${OUTBOX_ALERT_AFTER_ATTEMPTS} tentativas; continua tentando`,
       );
       return;
     }

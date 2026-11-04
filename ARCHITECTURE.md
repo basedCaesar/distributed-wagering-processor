@@ -122,6 +122,7 @@ Na fila, a mesma taxonomia vira ação (D8.2, D19): negócio (`REJECTED`, `PENDI
 ## Outbox e eventos (§11)
 
 - Linhas da outbox gravadas na transação do use case. O `outbox-publisher` pega só a **cabeça** de cada wallet (o evento mais antigo não publicado), com `SKIP LOCKED` e lease, e publica no tópico SNS FIFO `wagering-events.fifo` com `MessageGroupId = walletId`. Os eventos de uma wallet saem em ordem; wallets diferentes saem em paralelo (D9.1, D9.2, D20.3).
+- **Classes do §6.5** (D24): `InboxMessage` e `OutboxMessage` ficam em `src/modules/wagering/domain/`. Elas guardam o estado e as transições: receber e processar; enfileirar, publicar e reagendar com backoff de 2ⁿ s até 300 s; alerta a partir de 20 tentativas. Os adaptadores criam as linhas por elas. O SQL continua com o que precisa valer entre instâncias: o claim por cabeça de wallet com `SKIP LOCKED`, o lease, o dono (`locked_by`), o filtro de vencidos e o relógio (`now()` do banco, D18.12). Uma regra em memória não impede dois processos de pegarem a mesma linha; o banco impede.
 - Falha: backoff até 5 min. **Nunca descarta**: depois de 20 tentativas, alerta (log `error` e métrica), e continua tentando (D9.6, D20.4).
 - Entrega pelo menos uma vez: uma publicação dupla (lease vencido) é segura. O `event-auditor` deduplica pelo `eventId` com a mesma inbox e confere a ordem por `(wallet, tipo de evento)` (D9.7, D20.1).
 - Eventos: os 4 do enunciado, mais `WalletOpened` e `WagerTransactionFailed` (D9.4, D14.4).
@@ -189,7 +190,7 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 - **Redrive do SQS fora do contador de DLQ:** uma mensagem movida pelo `maxReceiveCount = 20` aparece só no gauge de profundidade, não em `wagering_dlq_messages_total` (D22.4).
 - **"Liquidada" só por referência:** um `WIN`/`LOSS` sem referência não marca a `BET` como liquidada para o `refund_after_settlement` (D22.8).
 - **Publicação dupla possível:** com um lease vencido no meio da publicação, um evento pode sair duas vezes; o consumidor deduplica pelo `eventId` (D20.5).
-- **`SIGTERM` real só testado fora do Windows:** o teste com o sinal real é pulado no Windows, e ainda não há CI (é o primeiro extra). A conferência à mão com `docker stop` nos 11 processos está registrada na D21.2.
+- **`SIGTERM` real só testado fora do Windows:** o teste com o sinal real é pulado no Windows, e ainda não há CI. A conferência à mão com `docker stop` nos 11 processos está registrada na D21.2.
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
 - **Sem teste de carga ainda:** o k6 (`bun run test:load`) é um extra (D11.6).

@@ -292,6 +292,26 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S11 — Ajustes de modelagem e limpeza
+
+**Entrega:**
+- `InboxMessage` e `OutboxMessage` no domínio (§6.5), usadas pelos adaptadores da inbox, da outbox e pelo publisher (D24);
+- backoff e limite de alerta da outbox no domínio; `outbox-policy.ts` só com lote, lease e espera;
+- os dois testes triviais da S0 apagados;
+- README, `ARCHITECTURE.md` e READMEs das partes sem jargão das fatias (os `docs/` e o `AI_WORKFLOW.md` continuam citando);
+- imagem do Bun e `@types/bun` em versões exatas (1.4.4);
+- provas 01 e 07 regeneradas (não aplicavam desde a S9) e `proofs:check` no `check`: cada patch de `proofs/` precisa aplicar na árvore atual;
+- e2e espera o Keycloak responder no `beforeAll` (polling com teto), em vez de depender do prazo de cada teste.
+
+**Cobre:** §6.0, §6.5 · D24
+
+**Aceite:**
+- testes de unidade das duas classes escritos antes e vistos falhando: transições válidas e inválidas, backoff com teto, alerta, `rehydrate` sem revalidar;
+- integração, concorrência e as 14 provas sem mudança nas asserções; `bun run check` verde; `test:repeat concurrency 10` verde; `test:proofs` 14/14; `bun run acceptance` no Compose de dev;
+- o desvio do §6.5 registrado no `AI_WORKFLOW.md`.
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":

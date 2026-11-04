@@ -64,13 +64,6 @@ Copy-Item .env.example .env       # Windows (PowerShell)
 
 `bun run infra:up` e `bun run check` **não** precisam do `.env`: o Compose define as variáveis de cada serviço e os testes usam o `.env.test`.
 
-> **Quem já tinha os containers de antes da S2 precisa recriá-los.** Os papéis do banco (`wagering_owner`, `wagering_app`) são criados pelo `scripts/postgres-init.sh`, que o Postgres só roda num volume novo:
->
-> ```bash
-> bun run infra:test:down && bun run infra:test:up    # testes
-> docker compose down -v && bun run infra:up          # dev (apaga os dados locais)
-> ```
-
 ## Exemplos do enunciado (§9 e §10)
 
 ### Token (Keycloak, D10.1, D23)
@@ -260,7 +253,7 @@ Morto à força no meio da carga, nada se perde nem duplica: a transação desfe
 | D5, R-13-I6: Postgres fora e reiniciado | `test/integration/failures/postgres-restart.spec.ts` (Postgres próprio do teste, D21.7) |
 | D5, B7.7: SQS fora | `test/integration/failures/sqs-down.spec.ts` |
 | D5, D21.3: prazo da requisição | `test/integration/http/request-timeout.spec.ts` |
-| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda fora do Windows; ainda não há CI (é o primeiro extra, depois da S10), então até lá a prova do sinal real é a conferência à mão com `docker stop` nos 11 processos, saída 0 ([`test/README.md`](test/README.md)) |
+| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda fora do Windows; ainda não há CI, então a prova do sinal real é a conferência à mão com `docker stop` nos 11 processos, saída 0 ([`test/README.md`](test/README.md)) |
 
 ## Infraestrutura
 

@@ -1,9 +1,9 @@
 diff --git a/src/modules/wagering/application/submit-wager-transaction.use-case.ts b/src/modules/wagering/application/submit-wager-transaction.use-case.ts
 --- a/src/modules/wagering/application/submit-wager-transaction.use-case.ts
 +++ b/src/modules/wagering/application/submit-wager-transaction.use-case.ts
-@@ -216,5 +216,4 @@
+@@ -256,5 +256,4 @@
        tx.outbox.append(eventsForTransition({ transaction, wallet, entry, context }), wallet.id);
        // Terminal: as pendentes da mesma wallet que a esperam vencem agora (D4.4).
 -      if (transaction.isTerminal()) await tx.transactions.nudgeDependents(transaction);
-       return { transaction, idempotentReplay: false };
-     });
+       const settledReferenceId = await settledReferenceOf(tx.transactions, transaction, reference);
+       return {

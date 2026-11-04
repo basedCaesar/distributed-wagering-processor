@@ -6,6 +6,7 @@ Um teste verde só prova algo se ele **falha** quando a proteção que ele cobre
 bun run infra:test:up
 bun run test:proofs          # as 14
 bun run test:proofs 3 10     # só algumas, pelo número
+bun run proofs:check         # só confere que cada patch aplica (git apply --check); roda dentro do check
 ```
 
 ## Como roda (D21.8)
@@ -16,7 +17,7 @@ Para cada prova de [`manifest.ts`](manifest.ts):
 2. cria o banco descartável `wagering_proof` no `postgres_test`, com o superusuário do Compose de teste e os mesmos dono e `GRANT`s do `postgres-init.sh`;
 3. roda o teste nomeado **sem** o patch: tem que passar (senão a prova não diz nada);
 4. aplica o patch (`git apply`) e roda de novo: tem que **falhar**;
-5. num `finally`, mesmo se a prova quebrar: desfaz o junction primeiro (com `rmdir`, que remove só o link), apaga o banco e apaga a cópia **sem** remoção recursiva. A cópia só é apagada se o caminho for uma `copy-*` dentro de `<tmp>/wagering-proofs/` e não houver nenhum link lá dentro; senão o script aborta sem apagar nada. No fim, ele confere que o `node_modules` do repositório não mudou. Nunca `git worktree remove` nem `rm -r`: foi assim que o `node_modules` foi apagado uma vez (AI_WORKFLOW, S8). Testado em `test/unit/proofs-cleanup.spec.ts`, com junctions de verdade.
+5. num `finally`, mesmo se a prova quebrar: desfaz o junction primeiro (com `rmdir`, que remove só o link), apaga o banco e apaga a cópia **sem** remoção recursiva. A cópia só é apagada se o caminho for uma `copy-*` dentro de `<tmp>/wagering-proofs/` e não houver nenhum link lá dentro; senão o script aborta sem apagar nada. No fim, ele confere que o `node_modules` do repositório não mudou. Nunca `git worktree remove` nem `rm -r`: foi assim que o `node_modules` foi apagado uma vez (registrado no `AI_WORKFLOW.md`). Testado em `test/unit/proofs-cleanup.spec.ts`, com junctions de verdade.
 
 Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteção do banco é removida por uma **migration nova** (`Migration20991231000001_proof`) que só existe na cópia: migration aplicada nunca é editada. O teste roda com `DB_NAME=wagering_proof` no ambiente, que vence o `--env-file` do Bun; o preload dos testes aplica as migrations, inclusive a da prova. Logs de cada execução em `logs/proofs/<início>/NN-base.log` e `NN-patched.log`.
 

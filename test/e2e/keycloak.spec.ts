@@ -61,6 +61,56 @@ async function submitAs(clientId: string, body: Record<string, unknown>): Promis
   });
 }
 
+/** Teto da espera pelo Keycloak (como a aceitação, D23.6). */
+const KEYCLOAK_READY_DEADLINE_MS = 120_000;
+/** Prazo de cada tentativa: uma resposta lenta conta como "ainda não pronto". */
+const KEYCLOAK_ATTEMPT_TIMEOUT_MS = 5_000;
+const KEYCLOAK_POLL_INTERVAL_MS = 500;
+
+/**
+ * Espera o Keycloak responder de verdade antes dos testes: o endpoint de
+ * token de cada client e o JWKS. O primeiro token de um Keycloak frio
+ * (container recém-subido ou ocioso) pode passar dos 5 s do prazo de um
+ * teste. Só repete o "ainda não pronto" (sem conexão, prazo da tentativa,
+ * `5xx`); qualquer outra resposta (um `401` de segredo errado, por exemplo)
+ * aborta na hora, com a causa. Estado observável, não `sleep` cego: o
+ * intervalo é só entre tentativas.
+ */
+async function waitForKeycloak(clientIds: readonly string[]): Promise<void> {
+  const deadline = Date.now() + KEYCLOAK_READY_DEADLINE_MS;
+  const ready = async (label: string, attempt: () => Promise<Response>): Promise<void> => {
+    let last = "nenhuma tentativa";
+    while (Date.now() < deadline) {
+      let response: Response | undefined;
+      try {
+        response = await attempt();
+      } catch (error) {
+        last = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      }
+      if (response?.status === 200) return;
+      if (response !== undefined) {
+        last = `${response.status} ${await response.text()}`;
+        if (response.status < 500) throw new Error(`Keycloak respondeu ${label} com ${last}`);
+      }
+      await Bun.sleep(KEYCLOAK_POLL_INTERVAL_MS);
+    }
+    throw new Error(`Keycloak não ficou pronto para ${label} em ${KEYCLOAK_READY_DEADLINE_MS} ms (última: ${last})`);
+  };
+  await ready("o JWKS", () => fetch(AUTH.jwksUrl, { signal: AbortSignal.timeout(KEYCLOAK_ATTEMPT_TIMEOUT_MS) }));
+  for (const clientId of clientIds) {
+    const secret = secrets.get(clientId);
+    if (secret === undefined) throw new Error(`client ${clientId} sem segredo no realm`);
+    await ready(`o token de ${clientId}`, () =>
+      fetch(`${REALM_URL}/protocol/openid-connect/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: secret }),
+        signal: AbortSignal.timeout(KEYCLOAK_ATTEMPT_TIMEOUT_MS),
+      }),
+    );
+  }
+}
+
 beforeAll(async () => {
   if (KEYCLOAK_URL === "") throw new Error("E2E_KEYCLOAK_URL não definido (.env.test)");
   const realm = JSON.parse(await readFile(REALM_FILE, "utf8")) as {
@@ -69,8 +119,9 @@ beforeAll(async () => {
   secrets = new Map(
     realm.clients.flatMap((c) => (c.secret === undefined ? [] : [[c.clientId, c.secret] as [string, string]])),
   );
+  await waitForKeycloak(["provider-a", "provider-b", "operator"]);
   api = await startTestApi({ auth: AUTH });
-});
+}, KEYCLOAK_READY_DEADLINE_MS + 30_000);
 
 afterEach(async () => {
   await expectLedgerMatchesBalances();

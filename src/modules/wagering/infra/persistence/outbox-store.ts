@@ -34,9 +34,11 @@ const CLAIM_SQL = `
            locked_by = ?
       FROM due
      WHERE t.id = due.id
-    RETURNING t.id, t.ordering_key, t.event_type, t.payload, t.attempts, t.position
+    RETURNING t.id, t.aggregate_id, t.ordering_key, t.event_type, t.payload, t.occurred_at,
+              t.attempts, t.next_attempt_at, t.position
   )
-  SELECT id, ordering_key, event_type, payload, attempts FROM claimed ORDER BY position`;
+  SELECT id, aggregate_id, ordering_key, event_type, payload, occurred_at, attempts, next_attempt_at
+    FROM claimed ORDER BY position`;
 
 /** Só o dono marca; só o que ainda não foi publicado (D20.5). */
 const MARK_PUBLISHED_SQL = `
@@ -69,10 +71,13 @@ const BACKLOG_SQL = `
 
 interface ClaimRow {
   id: string;
+  aggregate_id: string;
   ordering_key: string;
   event_type: string;
   payload: Record<string, unknown> | string;
+  occurred_at: Date | string;
   attempts: number;
+  next_attempt_at: Date | string;
 }
 
 export class MikroOrmOutboxStore implements OutboxStore {
@@ -80,13 +85,16 @@ export class MikroOrmOutboxStore implements OutboxStore {
 
   async claimHeads(limit: number, leaseMs: number, leaseToken: string): Promise<ClaimedEvent[]> {
     const rows = await this.orm.em.fork().execute<ClaimRow[]>(CLAIM_SQL, [limit, leaseMs, leaseToken]);
+    // O MikroORM troca os parsers do `pg`: o `jsonb` e o `timestamptz` podem chegar como texto.
     return rows.map((row) => ({
       id: row.id,
+      aggregateId: row.aggregate_id,
       orderingKey: row.ordering_key,
       eventType: row.event_type,
-      // O MikroORM troca os parsers do `pg`: o `jsonb` pode chegar como texto.
       payload: typeof row.payload === "string" ? (JSON.parse(row.payload) as Record<string, unknown>) : row.payload,
+      occurredAt: new Date(row.occurred_at),
       attempts: row.attempts,
+      nextAttemptAt: new Date(row.next_attempt_at),
     }));
   }
 

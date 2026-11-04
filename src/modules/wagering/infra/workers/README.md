@@ -23,7 +23,7 @@ Garantias:
 - **Duas reversões esperando a mesma referência:** só uma é aplicada, entre quaisquer workers (D1.1, D1.3): a segunda vê a primeira sob o lock da wallet e vira `REFERENCE_ALREADY_REVERSED`. Qual delas vence só é determinístico **dentro do lote de um worker**: a cutucada põe o mesmo `now()` nas duas, o claim desempata por `created_at`, e a mais antiga vence (D18.9). Com dois workers, ou com as duas em lotes diferentes, vence a que travar a wallet primeiro.
 - **Relógio único:** prazo, backoff e horários gravados vêm do `now()` da transação no banco, o mesmo do claim (D18.12).
 
-`SIGTERM`/`SIGINT`: termina o item atual e fecha; os leases dos outros vencem sozinhos (D8.6, D18.8). O teste de `SIGTERM` é da S8.
+`SIGTERM`/`SIGINT`: termina o item atual e fecha; os leases dos outros vencem sozinhos (D8.6, D18.8). O teste de `SIGTERM` está em `test/integration/shutdown/` (D21.2).
 
 Logs: `transactionId` e `walletId` no contexto; a categoria e o código do erro. Nunca valores, saldos nem payload (D11.1).
 

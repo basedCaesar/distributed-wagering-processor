@@ -34,4 +34,4 @@ O fluxo HTTP não tem `messageId` (D22.9 d).
 - `test/unit/logger/redaction.spec.ts`: o `redact` no 1º e no 2º nível, o serializer de erro e o erro como 1º argumento;
 - `test/integration/observability/pg-error-logs.spec.ts`: um `CHECK` violado de verdade (pelo `pg`, pelo MikroORM, pelo HTTP e pela fila) com valor e `playerId` distintivos: nenhum dos dois aparece em nenhuma linha;
 - `test/integration/observability/log-fields.spec.ts`: os processos reais `api` e `consumer`; os campos do R-12-01 nas linhas do fluxo HTTP e do SQS, e nenhum valor, saldo, `playerId` ou token no stdout;
-- `test/integration/logging/sensitive-data.spec.ts`: a divergência de reconciliação e o `500` (S3).
+- `test/integration/logging/sensitive-data.spec.ts`: a divergência de reconciliação e o `500`.

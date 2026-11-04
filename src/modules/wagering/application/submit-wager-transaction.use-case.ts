@@ -53,8 +53,11 @@ export interface SubmissionResult {
   idempotentReplay: boolean;
 }
 
-/** A mensagem da fila que trouxe o comando (R-10-04, D3.7). */
-export interface InboxMessage {
+/**
+ * A mensagem da fila que trouxe o comando (R-10-04, D3.7). O registro da
+ * inbox é o `InboxMessage` do domínio (§6.5, D24).
+ */
+export interface InboxDelivery {
   consumerName: string;
   /** O `messageId` do corpo (D3.7). */
   messageId: string;
@@ -117,12 +120,12 @@ export class SubmitWagerTransactionUseCase {
   execute(
     command: SubmitWagerTransactionCommand,
     meta: OperationMeta,
-    inbox: InboxMessage,
+    inbox: InboxDelivery,
   ): Promise<SubmissionResult | DuplicateMessage>;
   async execute(
     command: SubmitWagerTransactionCommand,
     meta: OperationMeta,
-    inbox?: InboxMessage,
+    inbox?: InboxDelivery,
   ): Promise<SubmissionResult | DuplicateMessage> {
     const hash = payloadHash(command);
     // Valida antes de tocar o banco: inválido nunca é gravado (D5). Esta

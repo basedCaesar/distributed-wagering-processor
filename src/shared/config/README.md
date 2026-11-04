@@ -13,7 +13,7 @@ Configuração tipada, validada com `zod` na subida do processo. Config inválid
 - Timeouts de health em `HEALTH_CHECK_TIMEOUT_MS` (padrão 1 s, D11.3).
 - `HTTP_REQUEST_TIMEOUT_MS` (padrão 10 000): prazo de cada requisição (D5, D21.3) e, no shutdown, o prazo para as requisições em andamento terminarem (D8.6).
 - `DB_APPLICATION_NAME` (opcional, formato da D6.4, até 63 caracteres): o `application_name` das conexões ao Postgres. Sem ele, cada processo usa o próprio nome (`api`, `consumer`…). No Compose, as `api` usam `api-1..3`; nos testes, cada processo separado tem o seu (D21.1).
-- Contas validadas juntas na subida (D21.6), com os padrões de antes da S8:
+- Contas validadas juntas na subida (D21.6), com os padrões abaixo:
 
 | Variáveis | Padrão | A conta |
 |---|---|---|

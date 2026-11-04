@@ -85,7 +85,7 @@ Por que não abortar: o abort fecha só a conexão do cliente. O `ReceiveMessage
 
 **Limitação:** se o processo morrer à força (`SIGKILL`, crash) durante um long poll, as mensagens daquele receive ficam em voo até a visibilidade de 120 s vencer. Não há perda nem duplicação; só atraso.
 
-O teste do sinal real (processo separado) é da S8; aqui, o `stop()` é testado direto (D19.7).
+O teste do sinal real, com processos separados, está em [`test/README.md`](../../../../../test/README.md#processos-separados-d74-d21); aqui, o `stop()` é testado direto (D19.7).
 
 ## Auditor (R-11-03, D9.7, D20.1, D20.2)
 

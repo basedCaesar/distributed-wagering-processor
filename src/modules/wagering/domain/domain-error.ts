@@ -66,6 +66,20 @@ export class BalanceLimitExceededError extends DomainError {
   }
 }
 
+/** Transição da inbox fora de ordem: processar duas vezes (§6.5, D24). */
+export class InvalidInboxTransitionError extends DomainError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** Transição da outbox depois de publicado: publicar de novo ou agendar retry (§6.5, D24). */
+export class InvalidOutboxTransitionError extends DomainError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 /** Lançamento com aritmética ou campos inválidos (R-06-41). */
 export class InvalidLedgerEntryError extends DomainError {
   constructor(message: string) {

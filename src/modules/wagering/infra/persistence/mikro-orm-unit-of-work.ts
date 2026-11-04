@@ -12,6 +12,8 @@ import {
   walletLockWaitSeconds,
 } from "../../../../shared/metrics/metrics";
 import type { IntegrationEvent } from "../../domain/events/integration-event";
+import { InboxMessage } from "../../domain/inbox-message";
+import { OutboxMessage } from "../../domain/outbox-message";
 import {
   type WagerTransaction,
   WagerTransactionKind,
@@ -91,18 +93,27 @@ const NUDGE_DEPENDENTS_SQL = `
       FOR UPDATE SKIP LOCKED)`;
 
 /**
- * Inbox (D3.7, D19.4): a linha nasce já processada, porque só fica gravada
- * se a transação do efeito commitar. Uma duplicata simultânea espera no
- * índice único até a primeira terminar; aí cai no `DO NOTHING`.
+ * Inbox (D3.7, D19.4, D24): a linha nasce já processada, porque só fica
+ * gravada se a transação do efeito commitar. Uma duplicata simultânea
+ * espera no índice único até a primeira terminar; aí cai no `DO NOTHING`.
  */
 const INBOX_INSERT_SQL = `
   INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
-  VALUES (?, ?, ?, now(), now())
+  VALUES (?, ?, ?, ?, ?)
   ON CONFLICT (consumer_name, message_id) DO NOTHING
   RETURNING message_id`;
 
-const INBOX_HASH_SQL = `
-  SELECT payload_hash FROM inbox_messages WHERE consumer_name = ? AND message_id = ?`;
+const INBOX_FIND_SQL = `
+  SELECT consumer_name, message_id, payload_hash, received_at, processed_at
+    FROM inbox_messages WHERE consumer_name = ? AND message_id = ?`;
+
+interface InboxRow {
+  consumer_name: string;
+  message_id: string;
+  payload_hash: string;
+  received_at: Date | string;
+  processed_at: Date | string | null;
+}
 
 /** A última versão auditada por (wallet, tipo) (D20.1); índice `audited_events_wallet_type_ix`. */
 const LAST_AUDITED_VERSION_SQL = `
@@ -166,22 +177,27 @@ function violatedUnique(error: unknown): string | undefined {
 }
 
 function scopeFor(em: EntityManager): TransactionScope {
-  return {
-    // `now()` é o início da transação no Postgres: o mesmo valor a cada
-    // chamada, e o mesmo relógio do claim e da cutucada (D18.12). Sai em ISO
-    // UTC com milissegundos (a precisão do `Date`): o MikroORM troca os
-    // parsers do `pg`, e um `timestamptz` cru chegaria como string.
-    async now() {
-      const [row] = await em.execute<{ now: string }[]>(NOW_SQL);
+  // `now()` é o início da transação no Postgres: o mesmo valor a cada
+  // chamada, e o mesmo relógio do claim e da cutucada (D18.12). Por isso é
+  // lido uma vez só por transação. Sai em ISO UTC com milissegundos (a
+  // precisão do `Date`): o MikroORM troca os parsers do `pg`, e um
+  // `timestamptz` cru chegaria como string.
+  let transactionNow: Promise<Date> | undefined;
+  const now = (): Promise<Date> => {
+    transactionNow ??= em.execute<{ now: string }[]>(NOW_SQL).then(([row]) => {
       if (!row) throw new Error("SELECT now() não devolveu linha");
       return new Date(row.now);
-    },
+    });
+    return transactionNow;
+  };
+  return {
+    now,
     wallets: walletRepository(em),
     transactions: transactionRepository(em),
     ledger: ledgerRepository(em),
     outbox: outboxWriter(em),
     reconciliationRuns: reconciliationRunRepository(em),
-    inbox: inboxRepository(em),
+    inbox: inboxRepository(em, now),
     auditedEvents: auditedEventRepository(em),
   };
 }
@@ -207,18 +223,41 @@ function auditedEventRepository(em: EntityManager): AuditedEventRepository {
   };
 }
 
-function inboxRepository(em: EntityManager): InboxRepository {
+/**
+ * A porta continua recebendo a `InboxEntry`; o registro é um `InboxMessage`
+ * (§6.5, D24). O `SELECT now()` (sem lock) vem antes do `INSERT`: o primeiro
+ * **lock** da transação continua sendo a chave da inbox (D19.4, D24).
+ */
+function inboxRepository(em: EntityManager, now: () => Promise<Date>): InboxRepository {
   return {
     async register(entry: InboxEntry) {
-      const params = [entry.consumerName, entry.messageId];
+      const at = await now();
+      const message = InboxMessage.receive({
+        consumerName: entry.consumerName,
+        messageId: entry.messageId,
+        payloadHash: entry.hash,
+        receivedAt: at,
+      });
+      // Nasce processada: só fica gravada se o efeito commitar (D19.4).
+      message.markProcessed(at);
       const inserted = await em.execute<{ message_id: string }[]>(INBOX_INSERT_SQL, [
-        ...params,
-        entry.hash,
+        message.consumerName,
+        message.messageId,
+        message.payloadHash,
+        message.receivedAt,
+        message.processedAt,
       ]);
       if (inserted.length > 0) return "new";
-      const [existing] = await em.execute<{ payload_hash: string }[]>(INBOX_HASH_SQL, params);
-      if (!existing) throw new Error("linha da inbox sumiu depois do conflito");
-      return existing.payload_hash === entry.hash ? "duplicate" : "conflict";
+      const [row] = await em.execute<InboxRow[]>(INBOX_FIND_SQL, [message.consumerName, message.messageId]);
+      if (!row) throw new Error("linha da inbox sumiu depois do conflito");
+      const existing = InboxMessage.rehydrate({
+        consumerName: row.consumer_name,
+        messageId: row.message_id,
+        payloadHash: row.payload_hash,
+        receivedAt: new Date(row.received_at),
+        processedAt: row.processed_at === null ? undefined : new Date(row.processed_at),
+      });
+      return existing.hasSameContentAs(message) ? "duplicate" : "conflict";
     },
   };
 }
@@ -418,19 +457,22 @@ function ledgerRepository(em: EntityManager): LedgerRepository {
   };
 }
 
+/** Cada evento vira um `OutboxMessage` pendente e vencido (§6.5, D24). */
 function outboxWriter(em: EntityManager): OutboxWriter {
   return {
     append(events: readonly IntegrationEvent<unknown>[], orderingKey: string) {
       for (const event of events) {
+        const message = OutboxMessage.enqueue(event, orderingKey);
         em.create(OutboxMessageSchema, {
-          id: event.eventId,
-          aggregateId: event.aggregateId,
-          orderingKey,
-          eventType: event.eventType,
-          payload: event.toJSON(),
-          occurredAt: event.occurredAt,
-          attempts: 0,
-          nextAttemptAt: event.occurredAt,
+          id: message.id,
+          aggregateId: message.aggregateId,
+          orderingKey: message.orderingKey,
+          eventType: message.eventType,
+          payload: message.payload,
+          occurredAt: message.occurredAt,
+          attempts: message.attempts,
+          // `enqueue` nasce vencido: o `nextAttemptAt` é o `occurredAt`.
+          nextAttemptAt: message.nextAttemptAt ?? message.occurredAt,
         });
       }
     },

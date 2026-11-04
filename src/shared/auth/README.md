@@ -20,7 +20,7 @@ Autenticação por JWT de um IdP externo (R-02-03, D10.1). O ponto de extensão 
 - Health e `/docs` são abertos (R-02-06, D13.2). A fila não tem auth (R-02-07).
 - O token nunca é logado (D11.1).
 
-## Keycloak (S10, D23)
+## Keycloak (D23)
 
 O emissor real é o Keycloak do Compose, com o realm `wagering` ([`keycloak/README.md`](../../../keycloak/README.md)): um client por provedor e um `operator`, todos por `client_credentials`.
 - `AUTH_ISSUER=http://localhost:8080/realms/wagering`: emissor fixo pelo `KC_HOSTNAME`, o mesmo qualquer que seja o host usado para pedir o token.

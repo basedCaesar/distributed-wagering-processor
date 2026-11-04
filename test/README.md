@@ -5,15 +5,15 @@
 | `unit/` | `bun run test:unit` | nada externo (domínio, políticas, config, `classifyError`, remoção segura das provas) |
 | `integration/` | `bun run test:integration` | Postgres e LocalStack **reais** (`bun run infra:test:up`), com o papel da app; alguns também o Docker direto |
 | `concurrency/` | `bun run test:concurrency` | o mesmo, com paralelismo real e processos Bun separados |
-| `e2e/` | `bun run test:e2e` | o Keycloak **real** do Compose de teste (porta 8081, `E2E_KEYCLOAK_URL`): tokens por `client_credentials` contra a api no processo (D10.3, D23.5) |
+| `e2e/` | `bun run test:e2e` | o Keycloak **real** do Compose de teste (porta 8081, `E2E_KEYCLOAK_URL`): tokens por `client_credentials` contra a api no processo (D10.3, D23.5). O `beforeAll` espera o JWKS e o endpoint de token de cada client responderem (polling, teto de 120 s, só o "ainda não pronto" se repete), porque o primeiro token de um Keycloak frio pode passar dos 5 s de um teste |
 | provas | `bun run test:proofs` | cópia do repositório e banco descartável (`proofs/README.md`, D21.8) |
 | aceitação | `bun run acceptance` | o Compose de dev inteiro (`bun run infra:up`): os exemplos do §9 e do §10, literais (D23.2, D23.6) |
 
-`bun run check` roda typecheck, lint, unidade, `migration:verify`, integração, concorrência e e2e. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
+`bun run check` roda typecheck, lint, `proofs:check` (cada patch de `proofs/` ainda aplica na árvore atual, sem rodar as provas), unidade, `migration:verify`, integração, concorrência e e2e. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
 
-A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 api, consumidores, Keycloak, seed), que o `check` não sobe. Vai rodar no CI, o primeiro extra (D23.7).
+A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 api, consumidores, Keycloak, seed), que o `check` não sobe. Ainda não há CI; quando houver, ela roda nele (D23.7).
 
-### Validação do clone limpo (aceite da S10)
+### Validação do clone limpo
 
 Validação final:
 - **Data:** 02/11/2026, 20:48 (-03:00).
@@ -35,7 +35,7 @@ Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplic
 - Sincronização por estado observável (`pg_locks`, linhas do banco, a fila), nunca por `sleep`.
 - Todo teste que move dinheiro termina com `expectLedgerMatchesBalances()`.
 
-## Processos separados (S8, D7.4, D21)
+## Processos separados (D7.4, D21)
 
 `support/processes.ts` sobe os entrypoints de produção (`src/entrypoints/main-*.ts`) em processos Bun separados contra a infra de teste, cada um com o seu `DB_APPLICATION_NAME` (D21.1), e grava o log de cada processo em `logs/processes/`. `kill()` mata **à força**. Usado por:
 
@@ -49,5 +49,5 @@ Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplic
 No Windows, `kill("SIGTERM")` termina o processo à força, sem shutdown (D21.2). Por isso:
 
 - o shutdown gracioso é provado em processo pelo `app.close()`, o mesmo caminho que o sinal dispara: `integration/shutdown/shutdown.spec.ts` e os testes de montagem do Nest;
-- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado (os 5 `skip` do `check`). **Hoje não há CI**: o CI é o primeiro extra, depois da S10, e é lá que esse teste vai rodar sempre. Até lá, ele só roda se alguém executar a suíte num Linux;
+- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado (os 5 `skip` do `check`). **Ainda não há CI**: por enquanto, ele só roda se alguém executar a suíte num Linux;
 - até o CI existir, a prova do `SIGTERM` real é a conferência à mão de 01/11/2026 no Compose de dev, com `docker stop` (SIGTERM real, Linux) nos 11 processos da D7.4: todos saíram com código 0, com o log "conexões do banco fechadas", em até 20 s (D21.2).

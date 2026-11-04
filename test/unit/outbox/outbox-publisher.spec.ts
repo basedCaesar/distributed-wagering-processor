@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { Logger } from "pino";
 import {
-  OUTBOX_POLICY,
+  OUTBOX_ALERT_AFTER_ATTEMPTS,
   outboxBackoffSeconds,
-  stalled,
-} from "../../../src/modules/wagering/infra/outbox/outbox-policy";
+  isOutboxStalled as stalled,
+} from "../../../src/modules/wagering/domain/outbox-message";
+import { OUTBOX_POLICY } from "../../../src/modules/wagering/infra/outbox/outbox-policy";
 import {
   type ClaimedEvent,
   type EventPublisher,
@@ -12,12 +13,17 @@ import {
   type OutboxStore,
 } from "../../../src/modules/wagering/infra/outbox/outbox-publisher";
 
+const T0 = new Date("2026-11-03T12:00:00.000Z");
+
 const event = (id: string, attempts = 0): ClaimedEvent => ({
   id,
+  aggregateId: `tx-${id}`,
   orderingKey: `wallet-${id}`,
   eventType: "WalletBalanceChanged",
   payload: { eventId: id, correlationId: `corr-${id}` },
+  occurredAt: T0,
   attempts,
+  nextAttemptAt: T0,
 });
 
 /** Store em memória que registra cada chamada, na ordem. */
@@ -74,7 +80,7 @@ describe("D9.6 D20.4: política do publisher", () => {
   });
 
   it("D9.6 D20.4: alerta a partir da 20ª tentativa", () => {
-    expect(OUTBOX_POLICY.alertAfterAttempts).toBe(20);
+    expect(OUTBOX_ALERT_AFTER_ATTEMPTS).toBe(20);
     expect(stalled(19)).toBe(false);
     expect(stalled(20)).toBe(true);
     expect(stalled(57)).toBe(true);
