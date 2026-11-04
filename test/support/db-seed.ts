@@ -227,6 +227,50 @@ export async function commitMovement(
   return transaction;
 }
 
+/**
+ * Vários movimentos numa transação só, em ordem, a partir do estado atual
+ * da wallet: um commit para o lote inteiro, em vez de um por movimento. O
+ * banco confere tudo do mesmo jeito: a cadeia linha a linha (trigger
+ * `BEFORE INSERT`), a cauda e a coerência transação ↔ lançamento no commit.
+ * Um `INSERT` de várias linhas dependeria de o trigger da cadeia enxergar
+ * as linhas anteriores do mesmo comando; por isso, um `INSERT` por linha.
+ * `DEBIT` é uma `BET`; `CREDIT`, um `WIN`.
+ */
+export async function commitMovements(
+  client: Client,
+  wallet: SeededWallet,
+  moves: readonly { direction: "DEBIT" | "CREDIT"; amount: string }[],
+): Promise<TransactionRow[]> {
+  let balance = wallet.balance;
+  let version = wallet.version;
+  const transactions: TransactionRow[] = [];
+  await inTransaction(client, async () => {
+    for (const move of moves) {
+      const after = move.direction === "DEBIT" ? subtractCents(balance, move.amount) : addCents(balance, move.amount);
+      const transaction = transactionRow(wallet, {
+        amount: move.amount,
+        balance_after: after,
+        ...(move.direction === "CREDIT" && { kind: "WIN" }),
+      });
+      await writeMovement(client, wallet.id, {
+        transaction,
+        direction: move.direction,
+        amount: move.amount,
+        balanceBefore: balance,
+        balanceAfter: after,
+        walletVersion: version + 1,
+      });
+      transactions.push(transaction);
+      balance = after;
+      version += 1;
+    }
+  });
+  // Só depois do commit: se o lote falhar, a wallet do teste fica como estava.
+  wallet.balance = balance;
+  wallet.version = version;
+  return transactions;
+}
+
 /** Débito de uma `BET` comprometido na hora, com a próxima versão (D6.2). */
 export function debitBet(
   client: Client,

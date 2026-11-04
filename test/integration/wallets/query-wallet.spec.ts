@@ -11,6 +11,7 @@ import {
 import { connect, newId } from "../../support/db";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
 import {
+  commitMovements,
   credit,
   debitBet,
   type SeededWallet,
@@ -57,13 +58,20 @@ async function ledgerPage(walletId: string, query = ""): Promise<LedgerPage> {
   return (await response.json()) as LedgerPage;
 }
 
-/** Wallet com OPENING (v1) e `moves` movimentos alternados (v2..). */
+/**
+ * Wallet com OPENING (v1) e `moves` movimentos alternados (v2..): débito de
+ * 10,00 e crédito de 3,00, gravados numa transação só (um commit para o
+ * lote; o "limit padrão 50" grava 54).
+ */
 async function walletWithEntries(moves: number): Promise<SeededWallet> {
   const wallet = await seedWallet(db, { balance: "1000.00" });
-  for (let i = 0; i < moves; i++) {
-    if (i % 2 === 0) await debitBet(db, wallet, "10.00");
-    else await credit(db, wallet, "3.00");
-  }
+  await commitMovements(
+    db,
+    wallet,
+    Array.from({ length: moves }, (_, i) =>
+      i % 2 === 0 ? { direction: "DEBIT" as const, amount: "10.00" } : { direction: "CREDIT" as const, amount: "3.00" },
+    ),
+  );
   return wallet;
 }
 
