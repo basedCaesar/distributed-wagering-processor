@@ -193,7 +193,7 @@ WebSocket de tempo real (D28), em 08/11/2026.
 - **Logs:** os fechamentos `4401` (recusado e vencido) entram no teste com processos reais; o `1011` e a falha de entrega, que não têm como ser provocados num processo real, ficam num teste de unidade com um pino de verdade capturando as linhas.
 - **`bun run check`:** verde. Unidade 706, integração 481 (7 `skip`, os `SIGTERM` no Windows), concorrência 33, e2e 6, `proofs:check` ok.
 - **`bun run test:repeat concurrency 10`:** 10/10 verdes, 861,3 s (`logs/test-repeat/2026-11-08T23-32-16-concurrency/`).
-- **Em aberto:** a D28.2 diz só que a conexão sem `pong` "é encerrada", sem código. A implementação faz `terminate` (sem frame de fechamento; o cliente vê `1006`), e é isso que o teste e o README do módulo descrevem. Fica para decidir se a D28.2 registra isso.
+- **Conexão sem `pong`:** a D28.2 dizia só que a conexão "é encerrada", sem código. Decidido por mim depois da correção: o servidor faz `terminate`, sem frame de fechamento, e o cliente vê `1006` (a conexão provavelmente está morta). Registrado na D28.2.
 
 ## Provas de que os testes protegem
 
