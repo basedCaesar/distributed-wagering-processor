@@ -276,7 +276,7 @@ const APPEND_ONLY_TABLES = ["accounts", "received_events", "journal_entries", "j
 
 describe("D27.3: diário append-only (privilégio e trigger)", () => {
   for (const table of APPEND_ONLY_TABLES) {
-    it(`D27.3: accounting_app sem UPDATE, DELETE e TRUNCATE em accounting.${table}`, async () => {
+    it(`D27.3: accounting_app sem privilégio de UPDATE (currency), DELETE e TRUNCATE em accounting.${table}`, async () => {
       await committedEntry();
       await withClient("accounting", async (client) => {
         await expectDbError(client.query(`UPDATE accounting.${table} SET currency = currency`), { code: "42501" });
@@ -294,6 +294,16 @@ describe("D27.3: diário append-only (privilégio e trigger)", () => {
       });
     });
   }
+
+  it("D27.3: accounting_app tem UPDATE só no id de accounting.accounts (o FOR UPDATE exige), e o trigger append-only recusa até ele", async () => {
+    await committedEntry();
+    await withClient("accounting", async (client) => {
+      await expectDbError(client.query("UPDATE accounting.accounts SET id = id"), {
+        code: "23000",
+        constraint: "accounts_append_only",
+      });
+    });
+  });
 
   it("D27.3: nem o dono faz TRUNCATE das tabelas do diário (trigger append-only)", async () => {
     await committedEntry();

@@ -131,6 +131,6 @@ export const PROOFS: Proof[] = [
     protection: "`FOR UPDATE` da conta da wallet no accounting (D27.4)",
     patch: "17-player-account-lock.patch",
     file: "test/concurrency/accounting.spec.ts",
-    test: "D27.4: as duas metades do mesmo par em duas instâncias, as duas esperando a conta da wallet → exatamente um lançamento",
+    test: "D27.4: as duas metades do mesmo par processadas ao mesmo tempo em duas instâncias, as duas presas ao gravar a metade (pg_locks) → exatamente um lançamento",
   },
 ];

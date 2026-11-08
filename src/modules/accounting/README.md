@@ -50,7 +50,7 @@ Cada conta existe por moeda.
 | `ROLLBACK` + CREDIT (desfaz `BET`) | `HOUSE_ROLLBACKS` | `PLAYER_WALLET` |
 | `ROLLBACK` + DEBIT (desfaz `WIN` ou `REFUND`, D1.2) | `PLAYER_WALLET` | `HOUSE_ROLLBACKS` |
 
-Qualquer outra combinação (`BET` com crédito, `WIN` com débito, `LOSS`, valor 0) é permanente e vai para a DLQ. Todo lançamento tem 2 linhas, uma moeda e exatamente uma linha de `PLAYER_WALLET`, na direção do `WalletBalanceChanged`. A linha da wallet repete o ledger do núcleo, então o saldo da conta reproduz o saldo da wallet. Wallet aberta com saldo zero não tem `OPENING` (D2.3) nem lançamento.
+Qualquer outra combinação (`BET` com crédito, `WIN` com débito, `LOSS`, valor 0) é permanente e vai para a DLQ. O valor 0 numa metade é recusado já na leitura do evento (zod), sem tentativa contada; um `LOSS` sem `walletVersion` continua aceitando 0, porque não é metade. Todo lançamento tem 2 linhas, uma moeda e exatamente uma linha de `PLAYER_WALLET`, na direção do `WalletBalanceChanged`. A linha da wallet repete o ledger do núcleo, então o saldo da conta reproduz o saldo da wallet. Wallet aberta com saldo zero não tem `OPENING` (D2.3) nem lançamento.
 
 **Exemplo** (wallet de 100.00, `BET` de 30.00, `REFUND` dela, `WIN` de 15.00, `ROLLBACK` do `WIN`):
 

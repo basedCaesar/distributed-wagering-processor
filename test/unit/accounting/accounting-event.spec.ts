@@ -88,6 +88,24 @@ describe("D27.1 D27.5: leitura dos eventos do accounting", () => {
     expect(() => parseAccountingEvent(body)).toThrow(ValidationError);
   });
 
+  it("D27.2 D27.5: WalletBalanceChanged com money 0.00 → ValidationError (valor 0 é permanente)", () => {
+    const event = balanceChanged({ walletId, transactionId, direction: "DEBIT", amount: "0.00", before: "100.00", after: "100.00", walletVersion: 2 });
+
+    expect(() => parseAccountingEvent(event.body)).toThrow(ValidationError);
+  });
+
+  it("D27.2 D27.5: WagerTransactionProcessed com walletVersion e money 0.00 → ValidationError (valor 0 é permanente)", () => {
+    const event = transactionProcessed({ walletId, transactionId, kind: "BET", amount: "0.00", after: "100.00", walletVersion: 2 });
+
+    expect(() => parseAccountingEvent(event.body)).toThrow(ValidationError);
+  });
+
+  it("D27.1 D27.2: saldos 0.00 continuam aceitos (só o valor da metade precisa ser > 0)", () => {
+    const event = balanceChanged({ walletId, transactionId, direction: "DEBIT", amount: "25.00", before: "25.00", after: "0.00", walletVersion: 2 });
+
+    expect(parseAccountingEvent(event.body).half?.balanceAfter.toString()).toBe("0.00");
+  });
+
   it("D27.5: WagerTransactionProcessed com kind fora da lista → ValidationError", () => {
     const body = mutate(
       transactionProcessed({ walletId, transactionId, kind: "BET", amount: "25.00", after: "75.00", walletVersion: 2 }).body,

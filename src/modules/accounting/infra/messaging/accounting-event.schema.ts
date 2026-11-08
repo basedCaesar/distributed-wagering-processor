@@ -10,6 +10,13 @@ const money = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/, "currency: 3 letras"),
 });
 
+/**
+ * O valor de uma metade (D27.2, D27.5): > 0. Valor 0 nunca vira
+ * lançamento, então é permanente: DLQ na hora, sem tentativa contada.
+ * Os saldos (`balanceBefore`, `balanceAfter`) continuam aceitando 0.
+ */
+const positiveMoney = money.refine((value) => value.amount !== "0.00", { message: "money: valor > 0" });
+
 const walletVersion = z.number().int("walletVersion: inteiro").min(1, "walletVersion ≥ 1");
 
 /** Envelope do §11 (R-11-09), o mesmo formato que o auditor aceita (D20.2). */
@@ -30,7 +37,7 @@ const balanceChangedData = z
     walletId: z.uuid(),
     transactionId: z.uuid(),
     direction: z.enum(["DEBIT", "CREDIT"]),
-    money,
+    money: positiveMoney,
     balanceBefore: money,
     balanceAfter: money,
     walletVersion,
@@ -50,7 +57,11 @@ const transactionProcessedData = z
     balanceAfter: money,
     walletVersion: walletVersion.optional(),
   })
-  .refine((data) => data.money.currency === data.balanceAfter.currency, { message: "moedas diferentes no mesmo evento" });
+  .refine((data) => data.money.currency === data.balanceAfter.currency, { message: "moedas diferentes no mesmo evento" })
+  // Com `walletVersion`, é uma metade: valor > 0 (D27.2). Sem ela (`LOSS`), 0 continua aceito (D27.1).
+  .refine((data) => data.walletVersion === undefined || data.money.amount !== "0.00", {
+    message: "money: valor > 0 numa metade",
+  });
 
 export interface ParsedAccountingEvent {
   eventId: string;

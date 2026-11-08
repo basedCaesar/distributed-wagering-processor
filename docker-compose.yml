@@ -87,6 +87,8 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+      # 1ª subida num volume novo (init + checkpoint) numa máquina lenta (D27.10).
+      start_period: 180s
 
   localstack:
     image: localstack/localstack:3
@@ -163,7 +165,8 @@ services:
       interval: 3s
       timeout: 3s
       retries: 60
-      start_period: 10s
+      # Importação do realm na 1ª subida, numa máquina lenta (D27.10).
+      start_period: 180s
 
   # Única porta da api para fora: os `curl` do §9 vão para localhost:3000.
   nginx:

@@ -243,22 +243,28 @@ describe("D27.5: permanentes → DLQ própria, intactos, nada lançado", () => {
     expect(await receivedHalves(transactionId)).toEqual(["WalletBalanceChanged"]);
   });
 
-  it("D27.2 D27.5: BET com crédito na wallet (kind e direção incompatíveis) → DLQ, nada lançado", async () => {
+  it("D27.2 D27.5: BET com crédito na wallet (kind e direção incompatíveis) → DLQ intacta, nada lançado", async () => {
     const walletId = newId();
     const bet = pair({ walletId, kind: "BET", direction: "CREDIT", amount: "25.00", before: "100.00", after: "125.00", walletVersion: 2 });
-    await send(walletId, bet.processed, bet.balance);
+    await send(walletId, bet.processed);
+    await sendMessage(queues.queueUrl, bet.balance.body, { groupId: walletId, attributes: ORIGIN_ATTRIBUTES });
     const consumer = await consumerFor();
 
     expect(await pollUntil(consumer, 2)).toEqual(["processed", "dead_lettered"]);
+    const [copy] = await receiveMessages(queues.dlqUrl, 1);
+    expect(copy?.Body).toBe(bet.balance.body);
+    expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
     expect(await journalOf(walletId)).toEqual([]);
+    expect(await receivedHalves(bet.transactionId)).toEqual(["WagerTransactionProcessed"]);
   });
 
-  it("D27.4 D27.5: metade numa moeda diferente da conta da wallet → DLQ", async () => {
+  it("D27.4 D27.5: metade numa moeda diferente da conta da wallet → DLQ intacta, nada lançado", async () => {
     const walletId = newId();
     const brl = pair({ walletId, kind: "OPENING", direction: "CREDIT", amount: "100.00", before: "0.00", after: "100.00", walletVersion: 1 });
+    const usdTransactionId = newId();
     const usd = balanceChanged({
       walletId,
-      transactionId: newId(),
+      transactionId: usdTransactionId,
       direction: "DEBIT",
       amount: "1.00",
       before: "100.00",
@@ -266,10 +272,39 @@ describe("D27.5: permanentes → DLQ própria, intactos, nada lançado", () => {
       walletVersion: 2,
       currency: "USD",
     });
-    await send(walletId, brl.processed, brl.balance, usd);
+    await send(walletId, brl.processed, brl.balance);
+    await sendMessage(queues.queueUrl, usd.body, { groupId: walletId, attributes: ORIGIN_ATTRIBUTES });
     const consumer = await consumerFor();
 
     expect(await pollUntil(consumer, 3)).toEqual(["processed", "processed", "dead_lettered"]);
+    const [copy] = await receiveMessages(queues.dlqUrl, 1);
+    expect(copy?.Body).toBe(usd.body);
+    expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
+    expect((await journalOf(walletId)).map((entry) => entry.kind)).toEqual(["OPENING"]);
+    expect(await receivedHalves(usdTransactionId)).toEqual([]);
+    expect(await playerAccountBalance(walletId)).toBe("100.00");
+  });
+
+  it.each([
+    "WalletBalanceChanged",
+    "WagerTransactionProcessed com walletVersion",
+  ])("D27.2 D27.5: %s com valor 0.00 → DLQ na hora, intacta, sem tentativa contada e nada gravado", async (eventType) => {
+    const walletId = newId();
+    const transactionId = newId();
+    const event =
+      eventType === "WalletBalanceChanged"
+        ? balanceChanged({ walletId, transactionId, direction: "DEBIT", amount: "0.00", before: "100.00", after: "100.00", walletVersion: 2 })
+        : transactionProcessed({ walletId, transactionId, kind: "BET", amount: "0.00", after: "100.00", walletVersion: 2 });
+    await sendMessage(queues.queueUrl, event.body, { groupId: walletId, attributes: ORIGIN_ATTRIBUTES });
+    const consumer = await consumerFor();
+
+    expect(await pollUntil(consumer, 1)).toEqual(["dead_lettered"]);
+    const [copy] = await receiveMessages(queues.dlqUrl, 1);
+    expect(copy?.Body).toBe(event.body);
+    expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
+    expect(await accountingAttempts(consumer.consumerName, event.eventId)).toBeUndefined();
+    expect(await accountingInboxRows(consumer.consumerName, event.eventId)).toBe(0);
+    expect(await receivedHalves(transactionId)).toEqual([]);
   });
 });
 
@@ -318,4 +353,34 @@ describe("D27.5 D8.3: transitório → tentativas contadas no accounting.message
     expect(await accountingAttempts(ACCOUNTING_CONSUMER_NAME, bet.balance.eventId)).toBeUndefined();
     expect(await receivedHalves(bet.transactionId)).toEqual(["WalletBalanceChanged"]);
   }, 30_000);
+
+  it("D27.5 D8.3 D19.11: 8 falhas transitórias (conta travada, lock_timeout) → a 8ª vai para a DLQ intacta, as tentativas são apagadas e nada é gravado", async () => {
+    const walletId = newId();
+    const bet = pair({ walletId, kind: "BET", direction: "DEBIT", amount: "25.00", before: "100.00", after: "75.00", walletVersion: 2 });
+    await sendMessage(queues.queueUrl, bet.balance.body, { groupId: walletId, attributes: ORIGIN_ATTRIBUTES });
+    const consumer = await consumerFor({ consumerName: ACCOUNTING_CONSUMER_NAME });
+    const lock = await holdPlayerAccount(walletId);
+    const outcomes: string[] = [];
+    try {
+      for (let attempt = 1; attempt <= 7; attempt++) {
+        outcomes.push(...(await pollUntil(consumer, 1)));
+        expect(await accountingAttempts(ACCOUNTING_CONSUMER_NAME, bet.balance.eventId)).toEqual({
+          attempts: attempt,
+          last_error_code: "TEMPORARILY_UNAVAILABLE",
+        });
+      }
+      outcomes.push(...(await pollUntil(consumer, 1)));
+    } finally {
+      await lock.release();
+    }
+
+    expect(outcomes).toEqual([...Array.from({ length: 7 }, () => "retry_scheduled"), "dead_lettered"]);
+    const [copy] = await receiveMessages(queues.dlqUrl, 1);
+    expect(copy?.Body).toBe(bet.balance.body);
+    expect(plainAttributes(copy?.MessageAttributes)).toEqual(plainAttributes(ORIGIN_ATTRIBUTES));
+    expect(await accountingAttempts(ACCOUNTING_CONSUMER_NAME, bet.balance.eventId)).toBeUndefined();
+    expect(await receivedHalves(bet.transactionId)).toEqual([]);
+    expect(await accountingInboxRows(ACCOUNTING_CONSUMER_NAME, bet.balance.eventId)).toBe(0);
+    expect(await queueCounts(queues.queueUrl)).toEqual({ visible: 0, inFlight: 0 });
+  }, 60_000);
 });

@@ -41,9 +41,9 @@ Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteçã
 | 14 | `14-mark-published-owner.patch` | `AND locked_by = ?` no `markPublished` (D20.5) | D20.5: A publica depois de B pegar o lease |
 | 15 | `15-journal-balanced.patch` | triggers diferidos de débito = crédito do diário (D27.3) | §6.4 D27.3: débitos ≠ créditos → o COMMIT falha |
 | 16 | `16-journal-append-only.patch` | trigger append-only das linhas do diário (D27.3) | D27.3: nem o dono faz UPDATE ou DELETE em `accounting.journal_lines` |
-| 17 | `17-player-account-lock.patch` | `FOR UPDATE` da conta da wallet no accounting (D27.4) | D27.4: as duas metades do mesmo par em duas instâncias → um lançamento |
+| 17 | `17-player-account-lock.patch` | `FOR UPDATE` da conta da wallet no accounting (D27.4) | D27.4: as duas metades do mesmo par processadas ao mesmo tempo em duas instâncias → exatamente um lançamento |
 
-**Prova 17: falha na sincronização.** Sem o `FOR UPDATE`, nenhuma das duas instâncias espera a conta da wallet, e o teste falha no passo que espera as duas sessões no `pg_locks` ("esperando lock: não aconteceu"), antes de conferir o lançamento. Ele pega a remoção do lock, mas não chega a mostrar o efeito (as duas metades gravadas sem lançamento).
+**Prova 17: falha pela asserção, não pela sincronização.** O teste prende o `INSERT` das duas metades (uma transação aberta grava linhas com os mesmos `event_id`), um ponto que existe com e sem o lock. Com o `FOR UPDATE`, uma instância fica presa ao gravar a metade e a outra espera a conta; sem ele, as duas leem "sem a outra metade" e ficam presas ao gravar. Nos dois casos o `pg_locks` mostra as duas esperando. Solto o `INSERT`, com o lock sai exatamente um lançamento; sem ele, as duas metades ficam gravadas e nenhum lançamento sai, e o teste falha na asserção do lançamento (revisão da S14).
 
 **Patches 02, 03, 04 e 12 na S14:** só o contexto do `migrations/index.ts` mudou (a migration do accounting é a vizinha anterior); a proteção removida é a mesma, e as quatro foram rodadas de novo (passa sem, falha com).
 
