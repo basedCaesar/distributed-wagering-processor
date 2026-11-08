@@ -124,8 +124,18 @@ async function populateCopy(dir: string): Promise<void> {
 }
 
 /**
- * Desfaz o junction do `node_modules` sem segui-lo: `rmdir` num junction
- * remove só o link. Roda sempre antes de qualquer remoção da cópia.
+ * Remove só o link, sem segui-lo (D25.7). No Windows, o junction sai com
+ * `rmdir`; fora dele, o tipo `"junction"` do `symlink` vira um symlink
+ * comum, e `rmdir` num symlink falha com `ENOTDIR`: lá, `unlink`.
+ */
+async function removeLink(path: string): Promise<void> {
+  if (process.platform === "win32") await rmdir(path);
+  else await unlink(path);
+}
+
+/**
+ * Desfaz o junction do `node_modules` sem segui-lo (`removeLink`). Roda
+ * sempre antes de qualquer remoção da cópia.
  */
 async function unlinkNodeModules(dir: string): Promise<void> {
   const link = join(dir, "node_modules");
@@ -135,7 +145,7 @@ async function unlinkNodeModules(dir: string): Promise<void> {
   });
   if (info === undefined) return;
   if (!info.isSymbolicLink()) throw new Error(`${link} não é o junction esperado; nada foi apagado`);
-  await rmdir(link);
+  await removeLink(link);
   if (existsSync(link)) throw new Error(`o junction ${link} não saiu; nada foi apagado`);
 }
 
@@ -263,7 +273,7 @@ async function runProof(proof: Proof, base: Record<string, string>, logDir: stri
 }
 
 /** Exportados para o teste de unidade da remoção segura (`test/unit/proofs-cleanup.spec.ts`). */
-export { assertProofCopy, newCopyDir, PROOFS_TMP, removeCopy, unlinkNodeModules };
+export { assertProofCopy, newCopyDir, PROOFS_TMP, removeCopy, removeLink, unlinkNodeModules };
 
 async function main(): Promise<void> {
   const wanted = new Set(process.argv.slice(2).map(Number));

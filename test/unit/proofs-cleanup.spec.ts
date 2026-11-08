@@ -3,13 +3,14 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { newCopyDir, PROOFS_TMP, removeCopy, unlinkNodeModules } from "../../scripts/proofs";
+import { newCopyDir, PROOFS_TMP, removeCopy, removeLink, unlinkNodeModules } from "../../scripts/proofs";
 
 /**
  * D21.8: a cópia de uma prova só é apagada se for uma cópia dentro de
  * `<tmp>/wagering-proofs/` e não tiver nenhum link; o junction do
  * `node_modules` sai antes, sem ser seguido. Filesystem real, junctions
- * de verdade (no Windows, `lstat` vê o junction como link).
+ * de verdade (no Windows, `lstat` vê o junction como link; fora dele, o
+ * junction é um symlink comum). Os links saem por `removeLink` (D25.7).
  */
 
 /** Pasta-alvo fora da área das provas, que nunca pode ser apagada. */
@@ -60,7 +61,7 @@ describe("D21.8: remoção segura da cópia das provas", () => {
     const link = join(inner, "escape");
     await symlink(target.dir, link, "junction");
     leftovers.push(async () => {
-      if (existsSync(link)) await rmdir(link);
+      if (existsSync(link)) await removeLink(link);
       if (existsSync(join(inner, "a.ts"))) await unlink(join(inner, "a.ts"));
       if (existsSync(inner)) await rmdir(inner);
       if (existsSync(copy)) await rmdir(copy);
@@ -78,7 +79,7 @@ describe("D21.8: remoção segura da cópia das provas", () => {
     const link = join(copy, "node_modules");
     await symlink(target.dir, link, "junction");
     leftovers.push(async () => {
-      if (existsSync(link)) await rmdir(link);
+      if (existsSync(link)) await removeLink(link);
       if (existsSync(copy)) await rmdir(copy);
     });
 

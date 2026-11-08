@@ -312,6 +312,26 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S12 — CI no GitHub Actions
+
+**Entrega:**
+- `.github/workflows/ci.yml`: a cada push e pull request, em `ubuntu-latest`, com o Bun 1.4.4; job `check` (`infra:test:up` + `bun run check` + conferência de 0 skip e dos 5 `SIGTERM` reais) e job `acceptance` (`infra:up` + `bun run acceptance` duas vezes);
+- em falha, `logs/` e os logs dos containers como artefato;
+- `.github/workflows/proofs.yml`: `test:proofs` manual e semanal;
+- `removeLink` no `scripts/proofs.ts` (a limpeza das provas no Linux);
+- prazos dos 3 testes que estouravam os 5 s em rodadas lentas, pelo critério da D25.8 (medido, sem asserção alterada);
+- badge e seção do CI no README; limitação "ainda não há CI" fora do `ARCHITECTURE.md`; `test/README.md`, D21.2 e D23.7 atualizados.
+
+**Cobre:** D21.2, D23.7 · D25
+
+**Aceite:**
+- os 3 testes de `proofs-cleanup.spec.ts` que falham num container Linux passam nele e no Windows, sem asserção alterada;
+- `bun run check` local verde; `test:repeat concurrency 10` verde;
+- 1ª rodada do `ci.yml` no GitHub: os dois jobs verdes, 0 skip e os 5 `SIGTERM` listados no log; tempos registrados no `test/README.md`;
+- 1ª rodada manual do `proofs.yml`: 14/14.
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":
@@ -324,7 +344,7 @@ Na ordem de `02-decisoes.md`, seção "Encaixes":
 7. k6;
 8. frontend;
 9. Kubernetes;
-10. CI.
+10. CI (feito na S12, D25).
 
 Cada um:
 1. decisão curta aprovada;

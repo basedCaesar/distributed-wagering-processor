@@ -1,0 +1,59 @@
+# Provas (D21.8, D25.5): cada patch de proofs/ remove uma proteção e o teste
+# nomeado precisa falhar. Lento: fora do push. Manual ou uma vez por semana,
+# para não gastar os minutos do Actions de um repositório privado.
+name: Proofs
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Segunda-feira, 06:00 UTC (03:00 em Brasília).
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proofs-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NO_COLOR: "1"
+
+jobs:
+  proofs:
+    name: test:proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run infra:test:up
+
+      - run: bun run test:proofs
+
+      - name: logs dos containers
+        if: failure()
+        run: |
+          mkdir -p logs/ci
+          docker compose -f docker-compose.test.yml ps -a > logs/ci/compose-test-ps.log 2>&1 || true
+          docker compose -f docker-compose.test.yml logs --no-color --timestamps > logs/ci/compose-test.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: proofs-logs
+          path: logs/
+          retention-days: 14
+          if-no-files-found: warn

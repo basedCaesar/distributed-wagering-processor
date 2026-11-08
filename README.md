@@ -1,5 +1,7 @@
 # distributed-wagering-processor
 
+[![CI](https://github.com/basedCaesar/distributed-wagering-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/basedCaesar/distributed-wagering-processor/actions/workflows/ci.yml)
+
 Processador distribuído de transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`), recebidas por HTTP e por SQS. O foco é correção financeira, concorrência e idempotência.
 
 - Enunciado: [`docs/CHALLENGE.md`](docs/CHALLENGE.md)
@@ -63,6 +65,25 @@ Copy-Item .env.example .env       # Windows (PowerShell)
 ```
 
 `bun run infra:up` e `bun run check` **não** precisam do `.env`: o Compose define as variáveis de cada serviço e os testes usam o `.env.test`.
+
+## CI
+
+GitHub Actions, em Linux (`ubuntu-latest`), com o Bun 1.4.4 (D25):
+
+| Workflow | Quando | O que roda |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | todo push e pull request | job `check`: `infra:test:up` e `bun run check` inteiro; falha se algum teste for pulado e exige os 5 `SIGTERM` reais (D25.3). Job `acceptance`: `infra:up` e `bun run acceptance` duas vezes (a 2ª é o replay) |
+| [`proofs.yml`](.github/workflows/proofs.yml) | manual (`workflow_dispatch`) e toda segunda, 06:00 UTC | `bun run test:proofs` (D25.5) |
+
+O badge no topo mostra o resultado do `ci.yml` no último push. Para ver uma rodada:
+
+1. **Actions** no GitHub → o workflow → a rodada.
+2. Cada job mostra o log de cada step. No `check`, o step "conferir 0 skip e os 5 SIGTERM reais" lista os 5 testes do sinal real que passaram.
+3. Se a rodada falhou, os logs ficam em **Artifacts**, no fim da página da rodada, por 14 dias: `check-logs`, `acceptance-logs` ou `proofs-logs`. É a pasta `logs/` do runner, com a saída dos testes, o log de cada processo separado (`logs/processes/`) e os logs dos containers (`logs/ci/compose-*.log`).
+
+Para rodar as provas na hora: **Actions** → **Proofs** → **Run workflow**.
+
+Linha de comando, com o [`gh`](https://cli.github.com): `gh run list`, `gh run watch`, `gh run view <id> --log-failed`, `gh run download <id>` (artefatos) e `gh workflow run proofs.yml`.
 
 ## Exemplos do enunciado (§9 e §10)
 
@@ -253,7 +274,7 @@ Morto à força no meio da carga, nada se perde nem duplica: a transação desfe
 | D5, R-13-I6: Postgres fora e reiniciado | `test/integration/failures/postgres-restart.spec.ts` (Postgres próprio do teste, D21.7) |
 | D5, B7.7: SQS fora | `test/integration/failures/sqs-down.spec.ts` |
 | D5, D21.3: prazo da requisição | `test/integration/http/request-timeout.spec.ts` |
-| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda fora do Windows; ainda não há CI, então a prova do sinal real é a conferência à mão com `docker stop` nos 11 processos, saída 0 ([`test/README.md`](test/README.md)) |
+| D8.6: shutdown | `test/integration/shutdown/shutdown.spec.ts`; sinal real em `sigterm.spec.ts`, que só roda fora do Windows e roda no CI a cada push, que falha se ele for pulado (D25.3, [`test/README.md`](test/README.md)) |
 
 ## Infraestrutura
 

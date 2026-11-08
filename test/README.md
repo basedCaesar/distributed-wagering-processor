@@ -11,7 +11,7 @@
 
 `bun run check` roda typecheck, lint, `proofs:check` (cada patch de `proofs/` ainda aplica na árvore atual, sem rodar as provas), unidade, `migration:verify`, integração, concorrência e e2e. A concorrência precisa ficar verde em 10 rodadas seguidas: `bun run test:repeat concurrency 10` (log de cada falha em `logs/test-repeat/`).
 
-A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 api, consumidores, Keycloak, seed), que o `check` não sobe. Ainda não há CI; quando houver, ela roda nele (D23.7).
+A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 api, consumidores, Keycloak, seed), que o `check` não sobe. Ela roda no CI, num job próprio, duas vezes (D23.7, D25.1).
 
 ### Validação do clone limpo
 
@@ -27,6 +27,17 @@ Validação final:
 - **Depois:** `docker compose down -v` no clone. A pasta foi apagada depois de conferir que não tinha link nem junction.
 
 Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplicadas, às 20:26 (aceitação duas vezes e o `seed` rodado de novo: "nada a fazer", saída 0). Na 1ª tentativa dessa validação, o `infra:up` ainda era `docker compose up -d`, sem `--build`. Ele reaproveitou uma `wagering-app:local` antiga da máquina, e o seed antigo falhou ao rodar de novo. Por isso o `infra:up` passou a usar `--build` (D23.8).
+
+## CI (D25)
+
+O `ci.yml` roda a cada push e pull request, em Linux (detalhes e como ver os resultados no [README](../README.md#ci)):
+- **job `check`:** `bun run infra:test:up` e `bun run check` inteiro. A saída vai para `logs/ci/check.log`, e o step seguinte falha se algum resumo do bun tiver `skip` ou `todo`, e se não houver exatamente 5 linhas `(pass) … recebe SIGTERM` (D25.3);
+- **job `acceptance`:** `bun run infra:up` e `bun run acceptance` duas vezes;
+- **em falha:** `logs/` sobe como artefato, junto com os logs dos containers (D25.4).
+
+O `test:proofs` roda à parte (`proofs.yml`), manual ou toda segunda (D25.5).
+
+**Teste que só passa numa plataforma** é bug, não exceção do CI: nada de `skipIf(linux)` nem prazo maior para ficar verde (D25.7). O 1º caso foi o `removeLink` do `scripts/proofs.ts`. Fora do Windows, o junction do `node_modules` é um symlink comum, e o `rmdir` falhava com `ENOTDIR`.
 
 ## Regras (CLAUDE.md, D11.4)
 
@@ -44,10 +55,10 @@ Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplic
 - `concurrency/restart.spec.ts`: R-13-C8, a topologia inteira com reinícios no meio da carga. Cada processo só morre depois de o banco mostrar trabalho dele em andamento: `api` e `consumer` esperando a wallet travada (`pg_locks`), o worker com a pendente reivindicada (`locked_by` = o `leaseToken` que ele loga na subida) e o publisher com um evento reivindicado e o `Publish` parado em `support/holding-proxy.ts` (um proxy TCP na frente do LocalStack real, que o teste segura e solta);
 - `integration/failures/postgres-restart.spec.ts`: F1 e F3, com um Postgres só do teste (`support/own-postgres.ts`, `docker run`, apagado num `finally`, D21.7).
 
-## Plataforma: o `SIGTERM` real só roda fora do Windows (ainda sem CI)
+## Plataforma: o `SIGTERM` real só roda fora do Windows (no CI, sempre)
 
 No Windows, `kill("SIGTERM")` termina o processo à força, sem shutdown (D21.2). Por isso:
 
 - o shutdown gracioso é provado em processo pelo `app.close()`, o mesmo caminho que o sinal dispara: `integration/shutdown/shutdown.spec.ts` e os testes de montagem do Nest;
-- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado (os 5 `skip` do `check`). **Ainda não há CI**: por enquanto, ele só roda se alguém executar a suíte num Linux;
-- até o CI existir, a prova do `SIGTERM` real é a conferência à mão de 01/11/2026 no Compose de dev, com `docker stop` (SIGTERM real, Linux) nos 11 processos da D7.4: todos saíram com código 0, com o log "conexões do banco fechadas", em até 20 s (D21.2).
+- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado (os 5 `skip` do `check` local). **No CI (Linux) ele roda a cada push**, e o job `check` falha se ele for pulado ou se não passarem os 5 (D25.3);
+- antes do CI, a prova do `SIGTERM` real foi a conferência à mão de 01/11/2026 no Compose de dev, com `docker stop` (SIGTERM real, Linux) nos 11 processos da D7.4: todos saíram com código 0, com o log "conexões do banco fechadas", em até 20 s (D21.2).

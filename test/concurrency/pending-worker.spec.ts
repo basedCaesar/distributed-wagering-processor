@@ -38,6 +38,14 @@ beforeAll(async () => {
 /** Pendentes criadas pelo teste atual, estacionadas no fim dele (`parkPendings`). */
 const created: string[] = [];
 
+/**
+ * D25.8: "dois workers sobre 20 pendentes" (4 wallets, 20 pendentes, dois
+ * ORMs) usa mais de 40% dos 5 s padrão do bun. Medido em 07/11/2026:
+ * 2,31 s a 3,62 s em 5 rodadas (46% a 72%); 5,35 s numa rodada lenta.
+ * Só o prazo do teste, nunca uma asserção (D21.10).
+ */
+const SLOW_TEST_MS = 30_000;
+
 // Todo teste que move dinheiro termina com o invariante (CLAUDE.md, D11.4).
 afterEach(async () => {
   await parkPendings(db, created);
@@ -280,7 +288,7 @@ describe("S5 D4.3 D18.2 D18.7: claim com SKIP LOCKED e lease", () => {
     for (const id of mine) {
       expect(await pendingRow(id)).toMatchObject({ status: "PENDING_REFERENCE", attempts: 1 });
     }
-  });
+  }, SLOW_TEST_MS);
 });
 
 describe("S5 D4.4 D7.2: cutucada e locks", () => {

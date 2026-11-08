@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createServer } from "node:net";
 import { Global, Module } from "@nestjs/common";
 import type { INestApplication } from "@nestjs/common";
@@ -92,37 +92,85 @@ async function readyBody(response: Response): Promise<ReadyResponseBody> {
   return (await response.json()) as ReadyResponseBody;
 }
 
-let runningApp: INestApplication | undefined;
+/**
+ * D25.8: cada cenário monta o seu app Nest uma vez, no `beforeAll`; cada
+ * teste mede só a requisição. Com a montagem dentro do teste, o R-09-20
+ * (o 1º teste da integração) chegou a 5,23 s numa rodada lenta do `check`
+ * (07/11/2026); sozinho, com a montagem, ele leva de 0,107 s a 0,116 s
+ * (5 rodadas).
+ */
+type Scenario =
+  | "real"
+  | "postgresUnreachable"
+  | "sqsUnreachable"
+  | "postgresRefused"
+  | "sqsRefused";
 
-afterEach(async () => {
-  await runningApp?.close();
-  runningApp = undefined;
+const apps: Partial<Record<Scenario, INestApplication>> = {};
+
+function appFor(scenario: Scenario): INestApplication {
+  const app = apps[scenario];
+  if (app === undefined) throw new Error(`app do cenário ${scenario} não montado`);
+  return app;
+}
+
+beforeAll(async () => {
+  const config = loadConfig();
+  apps.real = await bootHealthApp(config, fixedSecretsProvider(realCredentials));
+  apps.postgresUnreachable = await bootHealthApp(
+    config,
+    fixedSecretsProvider({
+      ...realCredentials,
+      host: UNREACHABLE_HOST,
+      port: UNREACHABLE_PORT,
+    }),
+  );
+  apps.sqsUnreachable = await bootHealthApp(
+    {
+      ...config,
+      aws: {
+        ...config.aws,
+        endpoint: `http://${UNREACHABLE_HOST}:${UNREACHABLE_PORT}`,
+      },
+    },
+    fixedSecretsProvider(realCredentials),
+  );
+  apps.postgresRefused = await bootHealthApp(
+    config,
+    fixedSecretsProvider({
+      ...realCredentials,
+      host: "127.0.0.1",
+      port: await closedPort(),
+    }),
+  );
+  apps.sqsRefused = await bootHealthApp(
+    {
+      ...config,
+      aws: {
+        ...config.aws,
+        endpoint: `http://127.0.0.1:${await closedPort()}`,
+      },
+    },
+    fixedSecretsProvider(realCredentials),
+  );
+});
+
+afterAll(async () => {
+  for (const app of Object.values(apps)) await app?.close();
 });
 
 describe("S0 R-09-20 R-09-21 R-09-22: health checks", () => {
   it("R-09-20: GET /health/live responde 200 sem token", async () => {
-    const config = loadConfig();
-    runningApp = await bootHealthApp(
-      config,
-      fixedSecretsProvider(realCredentials),
-    );
-
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/live`,
+      `http://localhost:${portOf(appFor("real"))}/health/live`,
     );
 
     expect(response.status).toBe(200);
   });
 
   it("R-09-21 R-09-22: GET /health/ready responde 200 sem token quando Postgres e SQS estão de pé", async () => {
-    const config = loadConfig();
-    runningApp = await bootHealthApp(
-      config,
-      fixedSecretsProvider(realCredentials),
-    );
-
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/ready`,
+      `http://localhost:${portOf(appFor("real"))}/health/ready`,
     );
     const body = await readyBody(response);
 
@@ -131,20 +179,9 @@ describe("S0 R-09-20 R-09-21 R-09-22: health checks", () => {
   });
 
   it("R-09-21 D11.3: GET /health/ready responde 503 quando o Postgres está inalcançável, dentro do timeout de 1s", async () => {
-    const config = loadConfig();
-    const unreachableCredentials: DatabaseCredentials = {
-      ...realCredentials,
-      host: UNREACHABLE_HOST,
-      port: UNREACHABLE_PORT,
-    };
-    runningApp = await bootHealthApp(
-      config,
-      fixedSecretsProvider(unreachableCredentials),
-    );
-
     const start = performance.now();
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/ready`,
+      `http://localhost:${portOf(appFor("postgresUnreachable"))}/health/ready`,
     );
     const elapsedMs = performance.now() - start;
     const body = await readyBody(response);
@@ -156,22 +193,9 @@ describe("S0 R-09-20 R-09-21 R-09-22: health checks", () => {
   });
 
   it("R-09-21 D11.3: GET /health/ready responde 503 quando o SQS está inalcançável, dentro do timeout de 1s", async () => {
-    const config = loadConfig();
-    const unreachableAwsConfig = {
-      ...config,
-      aws: {
-        ...config.aws,
-        endpoint: `http://${UNREACHABLE_HOST}:${UNREACHABLE_PORT}`,
-      },
-    };
-    runningApp = await bootHealthApp(
-      unreachableAwsConfig,
-      fixedSecretsProvider(realCredentials),
-    );
-
     const start = performance.now();
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/ready`,
+      `http://localhost:${portOf(appFor("sqsUnreachable"))}/health/ready`,
     );
     const elapsedMs = performance.now() - start;
     const body = await readyBody(response);
@@ -183,19 +207,8 @@ describe("S0 R-09-20 R-09-21 R-09-22: health checks", () => {
   });
 
   it("R-09-21 D11.3: GET /health/ready responde 503 quando a porta do Postgres não tem serviço (conexão recusada)", async () => {
-    const config = loadConfig();
-    const refusedCredentials: DatabaseCredentials = {
-      ...realCredentials,
-      host: "127.0.0.1",
-      port: await closedPort(),
-    };
-    runningApp = await bootHealthApp(
-      config,
-      fixedSecretsProvider(refusedCredentials),
-    );
-
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/ready`,
+      `http://localhost:${portOf(appFor("postgresRefused"))}/health/ready`,
     );
     const body = await readyBody(response);
 
@@ -205,21 +218,8 @@ describe("S0 R-09-20 R-09-21 R-09-22: health checks", () => {
   });
 
   it("R-09-21 D11.3: GET /health/ready responde 503 quando a porta do SQS não tem serviço (conexão recusada)", async () => {
-    const config = loadConfig();
-    const refusedAwsConfig = {
-      ...config,
-      aws: {
-        ...config.aws,
-        endpoint: `http://127.0.0.1:${await closedPort()}`,
-      },
-    };
-    runningApp = await bootHealthApp(
-      refusedAwsConfig,
-      fixedSecretsProvider(realCredentials),
-    );
-
     const response = await fetch(
-      `http://localhost:${portOf(runningApp)}/health/ready`,
+      `http://localhost:${portOf(appFor("sqsRefused"))}/health/ready`,
     );
     const body = await readyBody(response);
 

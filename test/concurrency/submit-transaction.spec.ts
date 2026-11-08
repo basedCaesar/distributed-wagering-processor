@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { Client } from "pg";
 import type { DuplicateLayer } from "../../src/modules/wagering/application/ports";
 import { wageringDuplicatesTotal } from "../../src/shared/metrics/metrics";
+import { LOCK_TIMEOUT_MS } from "../../src/shared/orm/db-session";
 import { type ErrorBody, startTestApi, type TestApi } from "../support/api";
 import { connect, newId, withClient } from "../support/db";
 import { expectLedgerMatchesBalances } from "../support/db-ledger-invariant";
@@ -27,6 +28,14 @@ const PARALLEL = 50;
  * nunca uma asserção (D21.10).
  */
 const SLOW_TEST_MS = 30_000;
+/**
+ * D25.8: o teste do `lock_timeout` espera de propósito os 2 s do
+ * `lock_timeout` (D5) antes do `503`; o resto dele (wallet, asserções,
+ * reenvio) ganha uma margem fixa de 5 s, o padrão do bun. Medido em
+ * 07/11/2026: 2,19 s a 2,56 s em 5 rodadas; 5,02 s numa rodada lenta.
+ * Só o prazo do teste, nunca uma asserção (D21.10).
+ */
+const LOCK_TIMEOUT_TEST_MS = LOCK_TIMEOUT_MS + 5_000;
 
 let api: TestApi;
 let observer: Client;
@@ -299,5 +308,5 @@ describe("S4 R-13-C1..C3 D3.6 D7.2: submissão concorrente", () => {
     // Reenviar depois do 503 aplica uma vez só.
     const retry = await submit(api, body);
     expect(retry).toMatchObject({ status: 200, body: { idempotentReplay: false } });
-  });
+  }, LOCK_TIMEOUT_TEST_MS);
 });

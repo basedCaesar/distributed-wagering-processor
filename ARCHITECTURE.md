@@ -190,7 +190,6 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 - **Redrive do SQS fora do contador de DLQ:** uma mensagem movida pelo `maxReceiveCount = 20` aparece só no gauge de profundidade, não em `wagering_dlq_messages_total` (D22.4).
 - **"Liquidada" só por referência:** um `WIN`/`LOSS` sem referência não marca a `BET` como liquidada para o `refund_after_settlement` (D22.8).
 - **Publicação dupla possível:** com um lease vencido no meio da publicação, um evento pode sair duas vezes; o consumidor deduplica pelo `eventId` (D20.5).
-- **`SIGTERM` real só testado fora do Windows:** o teste com o sinal real é pulado no Windows, e ainda não há CI. A conferência à mão com `docker stop` nos 11 processos está registrada na D21.2.
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
 - **Sem teste de carga ainda:** o k6 (`bun run test:load`) é um extra (D11.6).
@@ -212,3 +211,4 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 | Config, segredos, health, HTTP comum, ORM, AWS | [`config`](src/shared/config/README.md), [`secrets`](src/shared/secrets/README.md), [`health`](src/shared/health/README.md), [`http`](src/shared/http/README.md), [`orm`](src/shared/orm/README.md), [`aws`](src/shared/aws/README.md) |
 | nginx | [`nginx/README.md`](nginx/README.md) |
 | Testes e provas | [`test/README.md`](test/README.md), [`proofs/README.md`](proofs/README.md) |
+| CI (GitHub Actions, D25) | [`README.md`](README.md#ci), [`.github/workflows/`](.github/workflows/) |
