@@ -112,4 +112,25 @@ export const PROOFS: Proof[] = [
     file: "test/integration/outbox/outbox-publisher.spec.ts",
     test: "D20.5: o lease de A vence, B pega o mesmo evento e só então o Publish de A tem sucesso → o mark de A não marca nada (o dono é B) e A loga o lease vencido",
   },
+  {
+    id: 15,
+    protection: "triggers diferidos de débito = crédito do diário (D27.3)",
+    patch: "15-journal-balanced.patch",
+    file: "test/integration/accounting/schema.spec.ts",
+    test: "§6.4 D27.3: débitos ≠ créditos → o COMMIT falha",
+  },
+  {
+    id: 16,
+    protection: "trigger append-only das linhas do diário (D27.3)",
+    patch: "16-journal-append-only.patch",
+    file: "test/integration/accounting/schema.spec.ts",
+    test: "D27.3: nem o dono faz UPDATE ou DELETE em accounting.journal_lines (trigger append-only)",
+  },
+  {
+    id: 17,
+    protection: "`FOR UPDATE` da conta da wallet no accounting (D27.4)",
+    patch: "17-player-account-lock.patch",
+    file: "test/concurrency/accounting.spec.ts",
+    test: "D27.4: as duas metades do mesmo par em duas instâncias, as duas esperando a conta da wallet → exatamente um lançamento",
+  },
 ];

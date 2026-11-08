@@ -5,8 +5,14 @@ import type { Client } from "pg";
 import type { TestIssuer } from "./auth";
 import type { ApiClient } from "./wagering";
 
-/** Os processos da D7.4, cada um com o entrypoint de produção. */
-export type ProcessKind = "api" | "consumer" | "outbox-publisher" | "pending-worker" | "event-auditor";
+/** Os processos da D7.4 (com o `accounting-consumer` da D27.6), cada um com o entrypoint de produção. */
+export type ProcessKind =
+  | "api"
+  | "consumer"
+  | "outbox-publisher"
+  | "pending-worker"
+  | "event-auditor"
+  | "accounting-consumer";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 

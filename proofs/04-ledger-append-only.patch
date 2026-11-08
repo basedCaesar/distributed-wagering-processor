@@ -1,14 +1,14 @@
 diff --git a/migrations/index.ts b/migrations/index.ts
 --- a/migrations/index.ts
 +++ b/migrations/index.ts
-@@ -12,3 +12,4 @@
- import { Migration20261101000011_message_attempts_delete } from "./Migration20261101000011_message_attempts_delete";
+@@ -13,3 +13,4 @@
  import { Migration20261101000012_outbox_publisher_and_audit } from "./Migration20261101000012_outbox_publisher_and_audit";
+ import { Migration20261108000013_accounting } from "./Migration20261108000013_accounting";
 +import { Migration20991231000001_proof } from "./Migration20991231000001_proof";
 
-@@ -27,3 +28,4 @@
-   Migration20261101000011_message_attempts_delete,
+@@ -29,3 +30,4 @@
    Migration20261101000012_outbox_publisher_and_audit,
+   Migration20261108000013_accounting,
 +  Migration20991231000001_proof,
  ].map((migration) => ({ name: migration.name, class: migration }));
 diff --git a/migrations/Migration20991231000001_proof.ts b/migrations/Migration20991231000001_proof.ts

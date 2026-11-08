@@ -1,0 +1,10 @@
+diff --git a/src/modules/accounting/infra/persistence/accounting-unit-of-work.ts b/src/modules/accounting/infra/persistence/accounting-unit-of-work.ts
+--- a/src/modules/accounting/infra/persistence/accounting-unit-of-work.ts
++++ b/src/modules/accounting/infra/persistence/accounting-unit-of-work.ts
+@@ -29,4 +29,5 @@
+ /** Lock 2 da ordem do accounting (D27.4): a linha da conta da wallet. */
++// Prova 17 (D21.8): a conta da wallet é lida sem lock.
+ const PLAYER_ACCOUNT_LOCK_SQL = `
+-  SELECT id, currency FROM accounting.accounts WHERE wallet_id = ? FOR UPDATE`;
++  SELECT id, currency FROM accounting.accounts WHERE wallet_id = ?`;
+

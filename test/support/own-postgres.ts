@@ -71,6 +71,8 @@ export async function startOwnPostgres(): Promise<OwnPostgres> {
     "DB_OWNER_PASSWORD=wagering_owner",
     "-e",
     "DB_APP_PASSWORD=wagering_app",
+    "-e",
+    "DB_ACCOUNTING_PASSWORD=accounting_app",
     "--mount",
     `type=bind,source=${init},target=/docker-entrypoint-initdb.d/10-roles.sh,readonly`,
     IMAGE,

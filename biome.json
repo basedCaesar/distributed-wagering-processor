@@ -105,6 +105,89 @@
           }
         }
       }
+    },
+    {
+      "includes": ["**/modules/accounting/domain/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@nestjs/*",
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "zod",
+                      "**/application/**",
+                      "**/infra/**",
+                      "**/wagering/**"
+                    ],
+                    "message": "D27.8: o domínio do accounting não importa camadas externas nem o núcleo."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/modules/accounting/application/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "**/infra/**",
+                      "**/wagering/**"
+                    ],
+                    "message": "D27.8: a aplicação do accounting não importa infraestrutura nem o núcleo."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/modules/accounting/infra/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/wagering/**",
+                      "!**/wagering/infra/messaging/sqs-consumer",
+                      "!**/wagering/infra/messaging/sqs-wager-queue",
+                      "!**/wagering/infra/messaging/consumer-policy",
+                      "!**/wagering/infra/observability/gauges"
+                    ],
+                    "message": "D27.8: do núcleo, o accounting só importa o laço genérico (sqs-consumer, sqs-wager-queue, consumer-policy, gauges)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

@@ -38,6 +38,7 @@ export const METRIC_LABEL_VALUES = {
   reconciliation_divergences_total: {},
   outbox_events_stalled_total: {},
   audited_events_out_of_order_total: {},
+  accounting_entries_posted_total: {},
   wagering_duplicates_total: { layer: ["fast_path", "lock", "unique_index", "inbox"] },
   wagering_transactions_total: {
     status: ["PROCESSED", "REJECTED", "PENDING_REFERENCE", "FAILED"],
@@ -45,14 +46,14 @@ export const METRIC_LABEL_VALUES = {
     channel: CHANNELS,
   },
   wagering_retries_total: {
-    component: ["consumer", "event_auditor", "pending_worker", "outbox_publisher", "submission"],
+    component: ["consumer", "event_auditor", "pending_worker", "outbox_publisher", "submission", "accounting_consumer"],
   },
-  wagering_dlq_messages_total: { consumer: ["wager_transactions", "event_auditor"], reason: DLQ_REASONS },
+  wagering_dlq_messages_total: { consumer: ["wager_transactions", "event_auditor", "accounting"], reason: DLQ_REASONS },
   wallet_lock_wait_seconds: { outcome: ["acquired", ...LOCK_CONFLICT_REASONS] },
   wallet_lock_conflicts_total: { reason: LOCK_CONFLICT_REASONS },
   wagering_processing_duration_seconds: { channel: CHANNELS, outcome: ["ok", "error"] },
   wagering_refund_after_settlement_total: { channel: CHANNELS },
-  sqs_dlq_depth: { queue: ["wager_transactions_dlq", "event_auditor_dlq"] },
+  sqs_dlq_depth: { queue: ["wager_transactions_dlq", "event_auditor_dlq", "accounting_dlq"] },
   outbox_pending_events: {},
   outbox_lag_seconds: {},
 } as const satisfies Record<string, Record<string, readonly string[]>>;
@@ -94,6 +95,13 @@ export const outboxEventsStalledTotal = new Counter({
 export const auditedEventsOutOfOrderTotal = new Counter({
   name: "audited_events_out_of_order_total",
   help: "Eventos de integração com walletVersion menor ou igual à última auditada da mesma wallet e tipo",
+  registers: [metricsRegistry],
+});
+
+/** Lançamentos de partidas dobradas gravados pelo `accounting-consumer` (D27.6). */
+export const accountingEntriesPostedTotal = new Counter({
+  name: "accounting_entries_posted_total",
+  help: "Lançamentos de partidas dobradas gravados no diário do accounting",
   registers: [metricsRegistry],
 });
 

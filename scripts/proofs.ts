@@ -93,6 +93,7 @@ async function createProofDb(base: Record<string, string>): Promise<void> {
     await c.query(`REVOKE ALL ON DATABASE ${PROOF_DB} FROM PUBLIC`);
     await c.query(`GRANT CONNECT, TEMPORARY ON DATABASE ${PROOF_DB} TO wagering_owner`);
     await c.query(`GRANT CONNECT ON DATABASE ${PROOF_DB} TO wagering_app`);
+    await c.query(`GRANT CONNECT ON DATABASE ${PROOF_DB} TO accounting_app`);
     await c.query("REVOKE ALL ON SCHEMA public FROM PUBLIC");
   });
 }

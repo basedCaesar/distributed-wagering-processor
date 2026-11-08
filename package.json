@@ -21,7 +21,8 @@
     "infra:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "infra:test:down": "docker compose -f docker-compose.test.yml down -v",
     "acceptance": "bun run scripts/acceptance.ts",
-    "test:load": "bun run scripts/load-test.ts"
+    "test:load": "bun run scripts/load-test.ts",
+    "accounting:reconcile": "docker compose run --rm --no-deps -e DB_USER=wagering_app -e DB_PASSWORD=wagering_app -e DB_ACCOUNTING_USER=accounting_app -e DB_ACCOUNTING_PASSWORD=accounting_app accounting-consumer scripts/accounting-reconcile.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.4",

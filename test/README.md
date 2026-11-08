@@ -31,7 +31,7 @@ Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplic
 ## CI (D25)
 
 O `ci.yml` roda a cada push e pull request, em Linux (detalhes e como ver os resultados no [README](../README.md#ci)):
-- **job `check`:** `bun run infra:test:up` e `bun run check` inteiro. A saída vai para `logs/ci/check.log`, e o step seguinte falha se algum resumo do bun tiver `skip` ou `todo`, e se não houver exatamente 5 linhas `(pass) … recebe SIGTERM` (D25.3);
+- **job `check`:** `bun run infra:test:up` e `bun run check` inteiro. A saída vai para `logs/ci/check.log`, e o step seguinte falha se algum resumo do bun tiver `skip` ou `todo`, e se não houver exatamente 6 linhas `(pass) … recebe SIGTERM` (D25.3; a 6ª é o `accounting-consumer`, D27.9);
 - **job `acceptance`:** `bun run infra:up` e `bun run acceptance` duas vezes;
 - **em falha:** `logs/` sobe como artefato, junto com os logs dos containers (D25.4).
 
@@ -60,5 +60,5 @@ O `test:proofs` roda à parte (`proofs.yml`), manual ou toda segunda (D25.5).
 No Windows, `kill("SIGTERM")` termina o processo à força, sem shutdown (D21.2). Por isso:
 
 - o shutdown gracioso é provado em processo pelo `app.close()`, o mesmo caminho que o sinal dispara: `integration/shutdown/shutdown.spec.ts` e os testes de montagem do Nest;
-- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado (os 5 `skip` do `check` local). **No CI (Linux) ele roda a cada push**, e o job `check` falha se ele for pulado ou se não passarem os 5 (D25.3);
+- `integration/shutdown/sigterm.spec.ts` manda o `SIGTERM` real a cada entrypoint e **só roda fora do Windows** (`skipIf(win32)`); no Windows ele aparece como pulado. O `accounting-consumer` tem o mesmo teste em `integration/shutdown/accounting-sigterm.spec.ts` (D27.9): juntos, os 6 `skip` do `check` local. **No CI (Linux) eles rodam a cada push**, e o job `check` falha se algum for pulado ou se não passarem os 6 (D25.3);
 - antes do CI, a prova do `SIGTERM` real foi a conferência à mão de 01/11/2026 no Compose de dev, com `docker stop` (SIGTERM real, Linux) nos 11 processos da D7.4: todos saíram com código 0, com o log "conexões do banco fechadas", em até 20 s (D21.2).

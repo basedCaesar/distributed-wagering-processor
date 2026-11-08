@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadAccountingConfig } from "../../../src/modules/accounting/infra/accounting-config";
 import { loadConfig } from "../../../src/shared/config/config";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -19,13 +20,14 @@ interface ComposeService {
   volumes?: { source?: string; target?: string }[];
 }
 
-/** Os processos da D7.4 e quantas instâncias cada um tem. */
+/** Os processos da D7.4 (alterada pela D27.6) e quantas instâncias cada um tem. */
 const TOPOLOGY: Record<string, number> = {
   "main-api.ts": 3,
   "main-consumer.ts": 3,
   "main-outbox-publisher.ts": 2,
   "main-pending-worker.ts": 2,
   "main-event-auditor.ts": 1,
+  "main-accounting-consumer.ts": 2,
 };
 
 const SHELLS = ["sh", "bash", "/bin/sh", "/bin/bash", "ash", "/bin/ash"];
@@ -63,7 +65,7 @@ function processServices(): [string, ComposeService, string][] {
 }
 
 describe("D7.4 D21.2: topologia do Compose", () => {
-  it("D7.4: api ×3, consumer ×3, outbox-publisher ×2, pending-worker ×2 e event-auditor ×1", () => {
+  it("D7.4 D27.6: api ×3, consumer ×3, outbox-publisher ×2, pending-worker ×2, event-auditor ×1 e accounting-consumer ×2", () => {
     const counts: Record<string, number> = {};
     for (const [, service, entry] of processServices()) {
       counts[entry] = (counts[entry] ?? 0) + (service.deploy?.replicas ?? 1);
@@ -98,6 +100,22 @@ describe("D7.4 D21.2: topologia do Compose", () => {
       let error: string | undefined;
       try {
         loadConfig(env);
+      } catch (thrown) {
+        error = thrown instanceof Error ? thrown.message : String(thrown);
+      }
+      expect({ name, error }).toEqual({ name, error: undefined });
+    }
+  });
+
+  it("D27.3 D27.6: o accounting-consumer conecta com o accounting_app, e só ele; a config própria do accounting valida", () => {
+    for (const [name, service, entry] of processServices()) {
+      const env = service.environment ?? {};
+      const accounting = entry === "main-accounting-consumer.ts";
+      expect({ name, user: env.DB_USER }).toEqual({ name, user: accounting ? "accounting_app" : "wagering_app" });
+      if (!accounting) continue;
+      let error: string | undefined;
+      try {
+        loadAccountingConfig(env);
       } catch (thrown) {
         error = thrown instanceof Error ? thrown.message : String(thrown);
       }

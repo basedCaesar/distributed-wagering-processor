@@ -5,16 +5,25 @@ import { EnvSecretsProvider } from "../../src/shared/secrets/env-secrets-provide
 
 const secrets = new EnvSecretsProvider();
 
-export type DbRole = "app" | "owner";
+export type DbRole = "app" | "owner" | "accounting";
 
 /**
  * `app` é o papel da aplicação, usado em todos os testes (CLAUDE.md).
  * `owner` só prepara o banco e prova garantias que o privilégio esconderia
- * (P2 da S2: triggers do ledger e da reconciliação).
+ * (P2 da S2: triggers do ledger e da reconciliação). `accounting` é o papel
+ * do contexto de partidas dobradas (D27.3), no mesmo banco.
  */
 export async function credentialsFor(
   role: DbRole,
 ): Promise<DatabaseCredentials> {
+  if (role === "accounting") {
+    const app = await secrets.getDatabaseCredentials();
+    return {
+      ...app,
+      user: process.env.DB_ACCOUNTING_USER ?? "accounting_app",
+      password: process.env.DB_ACCOUNTING_PASSWORD ?? "",
+    };
+  }
   return role === "app"
     ? secrets.getDatabaseCredentials()
     : secrets.getMigrationDatabaseCredentials();

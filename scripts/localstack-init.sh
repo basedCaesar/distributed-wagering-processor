@@ -53,3 +53,31 @@ awslocal sns subscribe \
   --protocol sqs \
   --notification-endpoint "$AUDITOR_ARN" \
   --attributes RawMessageDelivery=true
+
+# Partidas dobradas (D27.5): fila assinante própria, DLQ própria, o mesmo redrive do auditor.
+awslocal sqs create-queue \
+  --queue-name wagering-events-accounting-dlq.fifo \
+  --attributes FifoQueue=true
+
+ACCOUNTING_DLQ_URL=$(awslocal sqs get-queue-url --queue-name wagering-events-accounting-dlq.fifo --query QueueUrl --output text)
+ACCOUNTING_DLQ_ARN=$(awslocal sqs get-queue-attributes --queue-url "$ACCOUNTING_DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
+
+cat > /tmp/wagering-events-accounting-attrs.json <<EOF
+{
+  "FifoQueue": "true",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"${ACCOUNTING_DLQ_ARN}\",\"maxReceiveCount\":\"20\"}"
+}
+EOF
+
+awslocal sqs create-queue \
+  --queue-name wagering-events-accounting.fifo \
+  --attributes file:///tmp/wagering-events-accounting-attrs.json
+
+ACCOUNTING_URL=$(awslocal sqs get-queue-url --queue-name wagering-events-accounting.fifo --query QueueUrl --output text)
+ACCOUNTING_ARN=$(awslocal sqs get-queue-attributes --queue-url "$ACCOUNTING_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
+
+awslocal sns subscribe \
+  --topic-arn "$TOPIC_ARN" \
+  --protocol sqs \
+  --notification-endpoint "$ACCOUNTING_ARN" \
+  --attributes RawMessageDelivery=true

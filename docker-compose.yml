@@ -1,5 +1,6 @@
 # Topologia da D7.4: mesma imagem, um entrypoint por processo.
-#   nginx → api ×3; consumer ×3; outbox-publisher ×2; pending-worker ×2; event-auditor ×1.
+#   nginx → api ×3; consumer ×3; outbox-publisher ×2; pending-worker ×2; event-auditor ×1;
+#   accounting-consumer ×2 (D27.6).
 # O bun é o PID 1 de cada container (ENTRYPOINT em forma exec no Dockerfile e
 # `command` em lista, sem shell): o SIGTERM do `docker compose stop` chega a
 # ele (D21.2). Cada processo tem 30 s para parar (D8.5, D8.6).
@@ -74,6 +75,7 @@ services:
       POSTGRES_PASSWORD: postgres
       DB_OWNER_PASSWORD: wagering_owner
       DB_APP_PASSWORD: wagering_app
+      DB_ACCOUNTING_PASSWORD: accounting_app
     ports:
       - "5432:5432"
     volumes:
@@ -222,3 +224,16 @@ services:
     environment: *app-env
     deploy:
       replicas: 1
+
+  # Partidas dobradas (D27.6): outro serviço, só por eventos; papel próprio no banco (D27.3).
+  accounting-consumer:
+    <<: *app
+    command: ["src/entrypoints/main-accounting-consumer.ts"]
+    environment:
+      <<: *app-env
+      DB_USER: accounting_app
+      DB_PASSWORD: accounting_app
+      QUEUE_ACCOUNTING_EVENTS: wagering-events-accounting.fifo
+      QUEUE_ACCOUNTING_EVENTS_DLQ: wagering-events-accounting-dlq.fifo
+    deploy:
+      replicas: 2

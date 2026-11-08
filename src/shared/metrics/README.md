@@ -33,6 +33,9 @@ docker compose exec api bun -e 'console.log(await (await fetch("http://localhost
 | `reconciliation_divergences_total` | counter | — | uma reconciliação encontrou divergência | R-09-19, D6.9 |
 | `outbox_events_stalled_total` | counter | — | falha de publicação com 20 tentativas ou mais (o alerta) | D9.6, D20.4 |
 | `audited_events_out_of_order_total` | counter | — | o auditor recebeu um evento fora de ordem por (wallet, tipo) | D20.1 |
+| `accounting_entries_posted_total` | counter | — | o `accounting-consumer` gravou um lançamento de partidas dobradas | D27.6 |
+
+Do `accounting-consumer` (D27.6), as métricas do laço genérico ganham um valor cada: `wagering_retries_total{component="accounting_consumer"}`, `wagering_dlq_messages_total{consumer="accounting"}` e `sqs_dlq_depth{queue="accounting_dlq"}`.
 
 Os gauges lidos no scrape têm uma fonte registrada pelo processo dono (`registerDlqDepthSource`, `registerOutboxBacklogSource`, via `infra/observability/gauges.ts`). Leitura que falha ou estoura o prazo: log `warn` e o gauge fica com o último valor.
 

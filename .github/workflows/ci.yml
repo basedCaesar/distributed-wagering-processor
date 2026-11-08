@@ -1,6 +1,6 @@
 # CI (D25): a cada push e pull request, em Linux.
 #   check      → infraestrutura de teste + `bun run check` inteiro (com o SIGTERM real, D21.2)
-#   acceptance → Compose de dev + `bun run acceptance` duas vezes (D23.2, D23.7)
+#   acceptance → Compose de dev + `bun run acceptance` duas vezes (D23.2, D23.7) + `accounting:reconcile` (D27.7)
 # Em falha, os logs dos testes (logs/) e dos containers sobem como artefato (D25.4).
 name: CI
 
@@ -49,9 +49,10 @@ jobs:
           mkdir -p logs/ci
           bun run check 2>&1 | tee logs/ci/check.log
 
-      # D25.3: no Linux nada é pulado. Os 5 pulados do Windows são o SIGTERM
-      # real (sigterm.spec.ts, D21.2); aqui eles precisam ter passado.
-      - name: conferir 0 skip e os 5 SIGTERM reais
+      # D25.3: no Linux nada é pulado. Os 6 pulados do Windows são o SIGTERM
+      # real (sigterm.spec.ts, D21.2, e accounting-sigterm.spec.ts, D27.9);
+      # aqui eles precisam ter passado.
+      - name: conferir 0 skip e os 6 SIGTERM reais
         run: |
           log=$(sed 's/\x1b\[[0-9;]*m//g' logs/ci/check.log)
           skipped=$(grep -E '^\s*[1-9][0-9]* (skip|todo)$' <<<"$log" || true)
@@ -63,8 +64,8 @@ jobs:
           sigterm=$(grep -E '^\(pass\) .*recebe SIGTERM' <<<"$log" || true)
           echo "$sigterm"
           count=$(grep -c . <<<"$sigterm" || true)
-          if [ "$count" -ne 5 ]; then
-            echo "::error::esperados 5 testes de SIGTERM real passando; encontrados $count (D21.2, D25.3)"
+          if [ "$count" -ne 6 ]; then
+            echo "::error::esperados 6 testes de SIGTERM real passando; encontrados $count (D21.2, D25.3, D27.9)"
             exit 1
           fi
 
@@ -112,6 +113,10 @@ jobs:
 
       - name: aceitação, 2ª rodada (idempotentReplay true)
         run: bun run acceptance 2>&1 | tee logs/ci/acceptance-2.log
+
+      # D27.7: o accounting-consumer do Compose consumiu tudo e o diário bate com o núcleo.
+      - name: reconciliação do diário de partidas dobradas
+        run: bun run accounting:reconcile --wait 120 2>&1 | tee logs/ci/accounting-reconcile.log
 
       - name: logs dos containers
         if: failure()

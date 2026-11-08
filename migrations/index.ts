@@ -11,6 +11,7 @@ import { Migration20261101000009_pending_consecutive_errors } from "./Migration2
 import { Migration20261101000010_pending_lease_owner } from "./Migration20261101000010_pending_lease_owner";
 import { Migration20261101000011_message_attempts_delete } from "./Migration20261101000011_message_attempts_delete";
 import { Migration20261101000012_outbox_publisher_and_audit } from "./Migration20261101000012_outbox_publisher_and_audit";
+import { Migration20261108000013_accounting } from "./Migration20261108000013_accounting";
 
 /** Ordem de aplicação. Migration aplicada nunca é editada: crie outra. */
 export const MIGRATIONS: MigrationObject[] = [
@@ -26,4 +27,5 @@ export const MIGRATIONS: MigrationObject[] = [
   Migration20261101000010_pending_lease_owner,
   Migration20261101000011_message_attempts_delete,
   Migration20261101000012_outbox_publisher_and_audit,
+  Migration20261108000013_accounting,
 ].map((migration) => ({ name: migration.name, class: migration }));

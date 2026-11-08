@@ -4,7 +4,7 @@ Um teste verde só prova algo se ele **falha** quando a proteção que ele cobre
 
 ```bash
 bun run infra:test:up
-bun run test:proofs          # as 14
+bun run test:proofs          # as 17
 bun run test:proofs 3 10     # só algumas, pelo número
 bun run proofs:check         # só confere que cada patch aplica (git apply --check); roda dentro do check
 ```
@@ -21,7 +21,7 @@ Para cada prova de [`manifest.ts`](manifest.ts):
 
 Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteção do banco é removida por uma **migration nova** (`Migration20991231000001_proof`) que só existe na cópia: migration aplicada nunca é editada. O teste roda com `DB_NAME=wagering_proof` no ambiente, que vence o `--env-file` do Bun; o preload dos testes aplica as migrations, inclusive a da prova. Logs de cada execução em `logs/proofs/<início>/NN-base.log` e `NN-patched.log`.
 
-## As 14
+## As 17
 
 | # | Patch | Proteção removida | Teste que falha |
 |---|---|---|---|
@@ -39,6 +39,13 @@ Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteçã
 | 12 | `12-ledger-tail.patch` | trigger de cauda (D7.3) | R-06-21 |
 | 13 | `13-restricted-role.patch` | papel restrito do banco (D7.3) | D7.3: papel que não é superusuário nem dono |
 | 14 | `14-mark-published-owner.patch` | `AND locked_by = ?` no `markPublished` (D20.5) | D20.5: A publica depois de B pegar o lease |
+| 15 | `15-journal-balanced.patch` | triggers diferidos de débito = crédito do diário (D27.3) | §6.4 D27.3: débitos ≠ créditos → o COMMIT falha |
+| 16 | `16-journal-append-only.patch` | trigger append-only das linhas do diário (D27.3) | D27.3: nem o dono faz UPDATE ou DELETE em `accounting.journal_lines` |
+| 17 | `17-player-account-lock.patch` | `FOR UPDATE` da conta da wallet no accounting (D27.4) | D27.4: as duas metades do mesmo par em duas instâncias → um lançamento |
+
+**Prova 17: falha na sincronização.** Sem o `FOR UPDATE`, nenhuma das duas instâncias espera a conta da wallet, e o teste falha no passo que espera as duas sessões no `pg_locks` ("esperando lock: não aconteceu"), antes de conferir o lançamento. Ele pega a remoção do lock, mas não chega a mostrar o efeito (as duas metades gravadas sem lançamento).
+
+**Patches 02, 03, 04 e 12 na S14:** só o contexto do `migrations/index.ts` mudou (a migration do accounting é a vizinha anterior); a proteção removida é a mesma, e as quatro foram rodadas de novo (passa sem, falha com).
 
 **Provas 3 e 4: defesa em camadas.** Sem o `CHECK` de saldo ≥ 0, um saldo negativo ainda é recusado, por outro trigger (`23000`). Sem o trigger append-only, o `UPDATE` no ledger ainda é recusado, por um `CHECK` (`23514`). Nas duas, o teste falha **pelo código do erro**: ele é específico da proteção removida e exige que a recusa venha dela (`CHECK` e trigger append-only, respectivamente). A prova mostra que o teste pega a remoção, não que a proteção é a única barreira: há outra proteção que também recusa, de propósito (D7.3, invariantes no banco).
 

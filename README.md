@@ -54,6 +54,7 @@ bun run test:repeat concurrency 10   # n rodadas seguidas; resumo sempre e log d
 bun run test:proofs       # remove cada proteção e exige que o teste dela falhe (proofs/README.md)
 bun run acceptance        # exemplos do §9 e do §10, literalmente, contra o Compose de dev
 bun run test:load         # teste de carga (k6) contra o Compose de dev, 3 rodadas; --rounds N para iterar (D26)
+bun run accounting:reconcile [--player-prefix p] [--wait s]  # diário de partidas dobradas × núcleo, num container na rede do Compose de dev (D27.7)
 ```
 
 `bun run check` e `bun run test:proofs` precisam da infraestrutura de teste no ar (`bun run infra:test:up`); alguns testes também usam o Docker direto (um Postgres próprio, D21.7, e o `docker compose config`). No Compose de dev, o serviço `migrate` aplica as migrations antes dos processos subirem.
@@ -257,6 +258,9 @@ flowchart LR
     sns --> aq[["SQS wagering-events-auditor.fifo"]]
     aq --> auditor["event-auditor ×1"]
     auditor -- "inbox + audited_events" --> pg
+    sns --> accq[["SQS wagering-events-accounting.fifo"]]
+    accq --> accounting["accounting-consumer ×2<br/>(serviço separado, D27)"]
+    accounting -- "schema accounting:<br/>diário de partidas dobradas" --> pg
 ```
 
 | Processo | Instâncias | Entrypoint | O que faz | Como as instâncias não se atrapalham |
@@ -267,10 +271,11 @@ flowchart LR
 | `outbox-publisher` | 2 | `main-outbox-publisher.ts` | publica a outbox no SNS, em ordem por wallet | claim da cabeça com `SKIP LOCKED`, lease e dono (D20.3, D20.5) |
 | `pending-worker` | 2 | `main-pending-worker.ts` | resolve as `PENDING_REFERENCE` | claim com `SKIP LOCKED`, lease e dono (D18.2, D18.10) |
 | `event-auditor` | 1 | `main-event-auditor.ts` | confere a ordem e deduplica os eventos | inbox por `eventId` (D9.7, D20.1) |
+| `accounting-consumer` | 2 | `main-accounting-consumer.ts` | diário de partidas dobradas, com papel próprio no banco ([`accounting`](src/modules/accounting/README.md)) | inbox por `eventId` + lock da conta da wallet (D27.4) |
 
 **Shutdown (D8.5, D8.6, D21.2).** O bun é o PID 1 de cada container (`ENTRYPOINT`/`CMD` em forma exec, testado em `test/integration/infra/compose-topology.spec.ts`), então o `SIGTERM` do `docker compose stop` chega a ele, e o Compose dá 30 s para parar:
 - `api`: readiness falsa, para de aceitar, termina as requisições em andamento (até 10 s) e só então fecha o banco;
-- `consumer` e `event-auditor`: terminam o lote ou o long poll e devolvem o que não começaram (D19.9);
+- `consumer`, `event-auditor` e `accounting-consumer`: terminam o lote ou o long poll e devolvem o que não começaram (D19.9);
 - `outbox-publisher` e `pending-worker`: terminam o item atual; os leases dos outros vencem sozinhos.
 
 Morto à força no meio da carga, nada se perde nem duplica: a transação desfeita volta pela reentrega ou pelo reenvio do provedor (mesma key), o lease vence e outra instância continua. É o R-13-C8, provado com todos os processos separados em `test/concurrency/restart.spec.ts`.
@@ -302,7 +307,7 @@ Morto à força no meio da carga, nada se perde nem duplica: a transação desfe
 
 Variáveis: `.env.example` (dev) e `.env.test` (testes). Nenhum segredo real: as senhas do banco, o admin do Keycloak e os segredos dos clients são de desenvolvimento.
 
-O Postgres tem três papéis (D7.3): `postgres` só para o init do container, `wagering_owner` para as migrations (`DB_MIGRATION_USER`) e `wagering_app` para a aplicação e os testes (`DB_USER`), sem `UPDATE`/`DELETE` no ledger. Detalhes em [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md).
+O Postgres tem quatro papéis (D7.3, D27.3): `postgres` só para o init do container, `wagering_owner` para as migrations (`DB_MIGRATION_USER`), `wagering_app` para a aplicação e os testes (`DB_USER`), sem `UPDATE`/`DELETE` no ledger, e `accounting_app` só para o schema `accounting` (o `accounting-consumer`). Os papéis nascem no init, que só roda num volume novo: num ambiente de antes da S14, recrie o volume uma vez (`docker compose down -v`, D27.9). Detalhes em [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md).
 
 O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto e cria:
 
@@ -312,6 +317,8 @@ O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto 
 | `wager-transactions-dlq.fifo` | FIFO | D8.2 |
 | `wagering-events.fifo` (SNS) | tópico FIFO | D9.1 |
 | `wagering-events-auditor.fifo` | FIFO, assinante do tópico (entrega raw) | D9.7 |
+| `wagering-events-accounting.fifo` | FIFO, assinante do tópico (entrega raw), redrive para a DLQ própria com `maxReceiveCount = 20` | D27.5 |
+| `wagering-events-accounting-dlq.fifo` | FIFO | D27.5 |
 
 Por causa da deduplicação por conteúdo, a mensagem do §10 entra com só `--message-group-id` (D8.1); o comando completo está em [§10 Mensagem na fila](#10-mensagem-na-fila).
 
@@ -324,6 +331,7 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Domínio (dinheiro, wallet, ledger, transação, eventos) | [`src/modules/wagering/README.md`](src/modules/wagering/README.md) |
 | Persistência (schema, garantias no banco, ORM, migrations) | [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md) |
 | Use cases (abrir wallet, consultas, reconciliação) | [`src/modules/wagering/application/README.md`](src/modules/wagering/application/README.md) |
+| Partidas dobradas (contexto `accounting`: plano de contas, diário, reconciliação, D27) | [`src/modules/accounting/README.md`](src/modules/accounting/README.md) |
 | API HTTP das wallets (endpoints, permissões, cursor) — Swagger em `/docs` | [`src/modules/wagering/infra/http/README.md`](src/modules/wagering/infra/http/README.md) |
 | Autenticação (JWT, papéis, guard) | [`src/shared/auth/README.md`](src/shared/auth/README.md) |
 | Keycloak (realm, clients, emissor) | [`keycloak/README.md`](keycloak/README.md) |

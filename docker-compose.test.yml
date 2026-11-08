@@ -10,6 +10,7 @@ services:
       POSTGRES_PASSWORD: postgres
       DB_OWNER_PASSWORD: wagering_owner
       DB_APP_PASSWORD: wagering_app
+      DB_ACCOUNTING_PASSWORD: accounting_app
     ports:
       - "5433:5432"
     volumes:

@@ -352,11 +352,31 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S14 — Partidas dobradas (`accounting`)
+
+- contexto `src/modules/accounting/` (domínio, aplicação, infra) e processo `accounting-consumer` ×2 (D27.6);
+- plano de contas e lançamento por `kind` e direção, casando `WalletBalanceChanged` e `WagerTransactionProcessed` pelo `transactionId` (D27.1, D27.2);
+- schema `accounting` com balanceamento diferido, append-only, unicidades e papel `accounting_app` (D27.3, D27.9);
+- lock da conta da wallet e lançamento comutativo (D27.4); taxonomia, DLQ e tentativas da D20.2 (D27.5);
+- reconciliação pura e `bun run accounting:reconcile` (D27.7), também no job `acceptance` do CI;
+- fronteira com o núcleo pelo lint e por teste (D27.8);
+- README do módulo com o diagrama do fluxo; `ARCHITECTURE.md`; README raiz.
+
+**Cobre:** §6.4 (L313) · D12.1 · D27
+
+**Aceite:**
+- testes de unidade, integração e concorrência escritos antes e vistos falhando;
+- nenhum arquivo de `src/modules/wagering/` alterado; os únicos testes existentes alterados são os da topologia (D27.6);
+- `bun run check` verde; `test:repeat concurrency 10` verde; `bun run test:proofs 15 16` verde;
+- `bun run acceptance` e `bun run accounting:reconcile` verdes no Compose de dev.
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":
 1. WebSocket;
-2. partidas dobradas;
+2. partidas dobradas (feito na S14, D27);
 3. Terraform;
 4. Secrets Manager;
 5. S3;

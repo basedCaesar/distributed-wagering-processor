@@ -4,7 +4,7 @@ Decisões, trade-offs e limitações do processador de transações de apostas (
 
 ## Visão geral
 
-Um serviço só (um código, um banco, D12.2), rodando como vários processos com a mesma imagem (D7.4): `api` ×3 atrás de um nginx, `consumer` ×3, `outbox-publisher` ×2, `pending-worker` ×2 e `event-auditor` ×1. O diagrama dos processos está no [`README.md`](README.md#processos).
+Um serviço só (um código, um banco, D12.2), rodando como vários processos com a mesma imagem (D7.4): `api` ×3 atrás de um nginx, `consumer` ×3, `outbox-publisher` ×2, `pending-worker` ×2 e `event-auditor` ×1. Ao lado dele, um serviço separado que só conversa por eventos: o `accounting-consumer` ×2, com o diário de partidas dobradas (D12.1, D27, seção abaixo). O diagrama dos processos está no [`README.md`](README.md#processos).
 
 - O HTTP (§9) e a fila (§10) chamam **o mesmo use case** (`SubmitWagerTransactionUseCase`, R-10-03).
 - Toda escrita financeira acontece numa transação SQL só, aberta pelo use case: transação, saldo, ledger, inbox, outbox e a "cutucada" das pendentes (R-05-02, D6.5).
@@ -182,6 +182,19 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 | SNS FIFO em vez de fila direta (D9.1) | fan-out para novos consumidores sem mexer no publisher | deduplicação do SNS em 5 min esconde duplicatas nos testes (D20.6) |
 | Um serviço com vários processos (D12.2) | atomicidade numa transação só | os papéis escalam juntos no mesmo banco |
 
+## Partidas dobradas (§6.4 L313, D12.1, D27)
+
+O ledger do núcleo é de entrada simples por wallet (§6.4). O diferencial de partidas dobradas é um **contexto separado**, `accounting`, que consome os eventos do tópico SNS numa fila assinante própria e grava um diário em que cada lançamento debita uma conta e credita outra, com débito = crédito. O núcleo não muda: nenhum arquivo, nenhuma tabela, nenhuma transação.
+
+- **Duas metades por lançamento** (D27.1): o `WalletBalanceChanged` do §11 não traz o `kind`, então o consumidor também lê o `WagerTransactionProcessed` (mesmo commit, mesmo `transactionId`, mesma `walletVersion`) e lança quando as duas chegam, em qualquer ordem.
+- **Plano de contas** (D27.2): `PLAYER_WALLET` por wallet (o passivo da casa com o jogador, cujo saldo reproduz o da wallet) e contas da casa para abertura, apostas recebidas, prêmios, estornos e rollbacks.
+- **Garantias no banco** (D27.3): schema próprio no mesmo Postgres, papel próprio (`accounting_app`), débito = crédito por constraint trigger diferido, append-only por trigger até para o dono, unicidade por `eventId` e por transação, `numeric(20,2)`.
+- **Concorrência** (D27.4): inbox → lock da conta da wallet → metade e lançamento; lançar é comutativo.
+- **Reconciliação** (D27.7): `bun run accounting:reconcile` separa wallet **atrasada** (eventos ainda não consumidos) de **divergente**, e confere Σ débitos − Σ créditos = 0 por moeda.
+- **Por que assíncrono** (D12.1): síncrono daria consistência imediata, mas aumentaria a transação e o lock do núcleo, que é o que o enunciado avalia.
+
+Detalhes, diagrama do fluxo e tabela de lançamentos: [`src/modules/accounting/README.md`](src/modules/accounting/README.md).
+
 ## Limitações
 
 - **Cadeia de reversão limitada:** depois de `BET ← REFUND ← ROLLBACK`, a `BET` não pode ser revertida de novo (o "estado líquido" não cabe num índice único, D1.2).
@@ -192,6 +205,8 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 - **Publicação dupla possível:** com um lease vencido no meio da publicação, um evento pode sair duas vezes; o consumidor deduplica pelo `eventId` (D20.5).
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
+- **Partidas dobradas com consistência eventual:** o diário fica atrás do núcleo enquanto os eventos não foram consumidos (o `accounting-consumer`, como o auditor, faz uma transação por evento, D26.13). Ele só vê os eventos publicados depois de a fila dele existir: sem backfill. Uma metade que nunca chegasse deixaria o par sem lançamento, visível só na reconciliação (D27.7, D27.9).
+- **Laço SQS genérico dentro do núcleo:** o accounting importa o `SqsConsumer` de `wagering/infra/messaging/`, limitado por lint e teste; movê-lo para `src/shared/messaging/` é dívida técnica (D27.8).
 - **Capacidade medida só numa máquina de desenvolvimento:** o teste de carga (`bun run test:load`, D26) roda o k6 e os 11 processos na mesma VM do Docker Desktop, contra o LocalStack. Os números valem para comparar degraus e cenários, não como capacidade de produção. A hot wallet é serializada pelo lock pessimista da wallet (D7.2), por desenho. Números e análise em [`docs/load-test.md`](docs/load-test.md).
 
 ## Onde está cada parte
@@ -205,6 +220,7 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 | Consumidor SQS (inbox, DLQ, tentativas, shutdown) | [`src/modules/wagering/infra/messaging/README.md`](src/modules/wagering/infra/messaging/README.md) |
 | Outbox, publisher e auditor | [`src/modules/wagering/infra/outbox/README.md`](src/modules/wagering/infra/outbox/README.md) |
 | Worker de pendentes | [`src/modules/wagering/infra/workers/README.md`](src/modules/wagering/infra/workers/README.md) |
+| Partidas dobradas (plano de contas, diário, reconciliação, D27) | [`src/modules/accounting/README.md`](src/modules/accounting/README.md) |
 | Autenticação e Keycloak | [`src/shared/auth/README.md`](src/shared/auth/README.md), [`keycloak/README.md`](keycloak/README.md) |
 | Erros (`classifyError`) | [`src/shared/errors/README.md`](src/shared/errors/README.md) |
 | Logs e métricas | [`src/shared/logger/README.md`](src/shared/logger/README.md), [`src/shared/metrics/README.md`](src/shared/metrics/README.md) |

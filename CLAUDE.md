@@ -35,6 +35,7 @@ Processos (D7.4), mesma imagem, entrypoints diferentes:
 | `outbox-publisher` | 2 |
 | `pending-worker` | 2 |
 | `event-auditor` | 1 |
+| `accounting-consumer` (serviço separado, D27) | 2 |
 
 ## Ambiente de desenvolvimento
 
@@ -46,7 +47,7 @@ Processos (D7.4), mesma imagem, entrypoints diferentes:
 ## Estrutura
 
 ```
-src/entrypoints/main-{api,consumer,outbox-publisher,pending-worker,event-auditor}.ts
+src/entrypoints/main-{api,consumer,outbox-publisher,pending-worker,event-auditor,accounting-consumer}.ts
 src/app/                     um módulo raiz por processo
 src/shared/                  config, logger, métricas, ORM, clientes AWS, auth, classifyError
 src/modules/<contexto>/
