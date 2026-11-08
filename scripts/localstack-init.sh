@@ -81,3 +81,22 @@ awslocal sns subscribe \
   --protocol sqs \
   --notification-endpoint "$ACCOUNTING_ARN" \
   --attributes RawMessageDelivery=true
+
+# Tempo real (D28.5): uma fila por instância do realtime, com o id estável
+# dela, já assinada no tópico. Sem DLQ (exceção da D28.7); retenção de 300 s,
+# porque evento velho não serve como notificação. O realtime só usa SQS: o
+# SNS fica só no publisher (D20.10).
+for INSTANCE in realtime-1 realtime-2; do
+  awslocal sqs create-queue \
+    --queue-name "wagering-events-realtime-${INSTANCE}.fifo" \
+    --attributes FifoQueue=true,MessageRetentionPeriod=300,VisibilityTimeout=30
+
+  REALTIME_URL=$(awslocal sqs get-queue-url --queue-name "wagering-events-realtime-${INSTANCE}.fifo" --query QueueUrl --output text)
+  REALTIME_ARN=$(awslocal sqs get-queue-attributes --queue-url "$REALTIME_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
+
+  awslocal sns subscribe \
+    --topic-arn "$TOPIC_ARN" \
+    --protocol sqs \
+    --notification-endpoint "$REALTIME_ARN" \
+    --attributes RawMessageDelivery=true
+done

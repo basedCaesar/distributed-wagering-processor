@@ -1,6 +1,6 @@
 # Topologia da D7.4: mesma imagem, um entrypoint por processo.
 #   nginx → api ×3; consumer ×3; outbox-publisher ×2; pending-worker ×2; event-auditor ×1;
-#   accounting-consumer ×2 (D27.6).
+#   accounting-consumer ×2 (D27.6); nginx /realtime → realtime ×2 (D28.11).
 # O bun é o PID 1 de cada container (ENTRYPOINT em forma exec no Dockerfile e
 # `command` em lista, sem shell): o SIGTERM do `docker compose stop` chega a
 # ele (D21.2). Cada processo tem 30 s para parar (D8.5, D8.6).
@@ -56,6 +56,33 @@ x-api: &api
       condition: service_healthy
     keycloak:
       condition: service_healthy
+
+# Tempo real (D28.11): sem banco, então não espera o Postgres nem o migrate, e
+# não recebe credencial de banco nem a config comum. A fila de cada instância
+# vem do init do LocalStack, já assinada no tópico (D28.5).
+x-realtime: &realtime
+  image: wagering-app:local
+  build: .
+  restart: unless-stopped
+  stop_grace_period: 30s
+  command: ["src/entrypoints/main-realtime.ts"]
+  expose:
+    - "9464"
+  depends_on:
+    localstack:
+      condition: service_healthy
+    keycloak:
+      condition: service_healthy
+
+x-realtime-env: &realtime-env
+  NODE_ENV: development
+  METRICS_PORT: "9464"
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT: http://localstack:4566
+  AUTH_ISSUER: http://localhost:8080/realms/wagering
+  AUTH_AUDIENCE: wagering-api
+  AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+  REALTIME_PORT: "3001"
 
 x-api-env: &api-env
   <<: *app-env
@@ -180,6 +207,8 @@ services:
       - api-1
       - api-2
       - api-3
+      - realtime-1
+      - realtime-2
     restart: unless-stopped
 
   api-1:
@@ -240,3 +269,16 @@ services:
       QUEUE_ACCOUNTING_EVENTS_DLQ: wagering-events-accounting-dlq.fifo
     deploy:
       replicas: 2
+
+  # Tempo real (D28.5): o id estável dá o nome da fila de cada instância.
+  realtime-1:
+    <<: *realtime
+    environment:
+      <<: *realtime-env
+      REALTIME_INSTANCE_ID: realtime-1
+
+  realtime-2:
+    <<: *realtime
+    environment:
+      <<: *realtime-env
+      REALTIME_INSTANCE_ID: realtime-2

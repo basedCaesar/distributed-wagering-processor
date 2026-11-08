@@ -372,10 +372,32 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S15 — Tempo real por WebSocket (`realtime`)
+
+- contexto `src/modules/realtime/` (domínio, aplicação, infra) e processo `realtime` ×2, sem banco e com config própria (D28.1, D28.11);
+- protocolo com `auth` no 1º frame, `follow`/`unfollow`, códigos de fechamento e expiração do token (D28.2);
+- permissões da D10.2 nos eventos: wallet para quem segue, transação só para o próprio provedor e o operador (D28.3);
+- projeção por lista fechada, sem `playerId`, `roundId`, `gameId` nem ids de rastreio (D28.4);
+- fila por instância com id estável, criada e assinada no tópico pela infra (`localstack-init.sh`); o realtime só usa SQS (D28.5, D20.10); descarte por idade no lugar do purge (D28.6); sem inbox nem DLQ, como exceção registrada (D28.7);
+- contrato do cliente (GET + `walletVersion`) e demo `bun run realtime:watch` (D28.8, D28.13);
+- nginx com upgrade em `/realtime` (D28.9); `WsAdapter` do Nest no Bun (D28.10);
+- fronteira pelo lint e por teste; topologia e contagem de SIGTERM do CI (D28.12);
+- README do módulo com os diagramas do fluxo e da reconexão; `nginx/README.md`; `ARCHITECTURE.md`; README raiz.
+
+**Cobre:** V-01 · V-03 · C5 · D12.4 · D28
+
+**Aceite:**
+- testes de unidade, integração e concorrência escritos antes e vistos falhando;
+- nenhum arquivo de `src/modules/wagering/` alterado; os únicos testes existentes alterados são os da topologia e a contagem do CI (D28.12);
+- `bun run check` verde; `test:repeat concurrency 10` verde;
+- `bun run acceptance` verde e `bun run realtime:watch` mostrando os eventos de uma `BET` no Compose de dev.
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":
-1. WebSocket;
+1. WebSocket (feito na S15, D28);
 2. partidas dobradas (feito na S14, D27);
 3. Terraform;
 4. Secrets Manager;

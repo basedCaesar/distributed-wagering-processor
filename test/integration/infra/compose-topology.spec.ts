@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadAccountingConfig } from "../../../src/modules/accounting/infra/accounting-config";
+import { loadRealtimeConfig } from "../../../src/modules/realtime/infra/realtime-config";
 import { loadConfig } from "../../../src/shared/config/config";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -20,7 +21,7 @@ interface ComposeService {
   volumes?: { source?: string; target?: string }[];
 }
 
-/** Os processos da D7.4 (alterada pela D27.6) e quantas instâncias cada um tem. */
+/** Os processos da D7.4 (alterada pela D27.6 e pela D28.12) e quantas instâncias cada um tem. */
 const TOPOLOGY: Record<string, number> = {
   "main-api.ts": 3,
   "main-consumer.ts": 3,
@@ -28,7 +29,11 @@ const TOPOLOGY: Record<string, number> = {
   "main-pending-worker.ts": 2,
   "main-event-auditor.ts": 1,
   "main-accounting-consumer.ts": 2,
+  "main-realtime.ts": 2,
 };
+
+/** O realtime não usa banco e tem config própria, sem a comum (D28.11). */
+const REALTIME_ENTRY = "main-realtime.ts";
 
 const SHELLS = ["sh", "bash", "/bin/sh", "/bin/bash", "ash", "/bin/ash"];
 
@@ -65,7 +70,7 @@ function processServices(): [string, ComposeService, string][] {
 }
 
 describe("D7.4 D21.2: topologia do Compose", () => {
-  it("D7.4 D27.6: api ×3, consumer ×3, outbox-publisher ×2, pending-worker ×2, event-auditor ×1 e accounting-consumer ×2", () => {
+  it("D7.4 D27.6 D28.12: api ×3, consumer ×3, outbox-publisher ×2, pending-worker ×2, event-auditor ×1, accounting-consumer ×2 e realtime ×2", () => {
     const counts: Record<string, number> = {};
     for (const [, service, entry] of processServices()) {
       counts[entry] = (counts[entry] ?? 0) + (service.deploy?.replicas ?? 1);
@@ -84,6 +89,33 @@ describe("D7.4 D21.2: topologia do Compose", () => {
     }
   });
 
+  it("D28.9 D28.11: as instâncias do realtime não publicam porta, têm id estável e único, e o nginx depende delas", () => {
+    const nginx = services.nginx;
+    const realtimes = processServices().filter(([, , entry]) => entry === REALTIME_ENTRY);
+    const ids = realtimes.map(([, service]) => service.environment?.REALTIME_INSTANCE_ID);
+    for (const [name, service] of realtimes) {
+      expect({ name, ports: service.ports ?? [], replicas: service.deploy?.replicas ?? 1 }).toEqual({ name, ports: [], replicas: 1 });
+      expect(Object.keys(nginx?.depends_on ?? {})).toContain(name);
+    }
+    expect(ids).toEqual(["realtime-1", "realtime-2"]);
+  });
+
+  it("D28.9: o nginx faz o upgrade em /realtime para as 2 instâncias, com prazo de leitura acima do ping de 30 s", async () => {
+    const conf = await readFile(join(REPO_ROOT, "nginx", "nginx.conf"), "utf8");
+    const upstream = /upstream realtime \{([^}]*)\}/.exec(conf)?.[1] ?? "";
+    const location = /location \/realtime \{([^}]*)\}/.exec(conf)?.[1] ?? "";
+
+    expect(upstream).toContain("server realtime-1:3001 resolve;");
+    expect(upstream).toContain("server realtime-2:3001 resolve;");
+    expect(location).toContain("proxy_pass http://realtime;");
+    expect(location).toContain("proxy_http_version 1.1;");
+    expect(location).toContain("proxy_set_header Upgrade $http_upgrade;");
+    expect(location).toContain("proxy_set_header Connection $connection_upgrade;");
+    expect(conf).toMatch(/map \$http_upgrade \$connection_upgrade \{[^}]*default\s+upgrade;[^}]*''\s+close;[^}]*\}/);
+    const readTimeout = Number.parseInt(/proxy_read_timeout (\d+)s;/.exec(location)?.[1] ?? "0", 10);
+    expect(readTimeout).toBeGreaterThan(30);
+  });
+
   it("D7.4: a imagem do nginx é uma versão exata ≥ 1.27.3 (o `resolve` do upstream não existe antes)", () => {
     const image = services.nginx?.image ?? "";
     const match = /^nginx:(\d+)\.(\d+)\.(\d+)(?:-alpine)?$/.exec(image);
@@ -94,12 +126,13 @@ describe("D7.4 D21.2: topologia do Compose", () => {
     expect({ image, atLeast_1_27_3: atLeast }).toEqual({ image, atLeast_1_27_3: true });
   });
 
-  it("D7.4 D21.6: o ambiente de cada processo do Compose passa na validação da config (sem o .env.test por trás)", () => {
-    for (const [name, service] of processServices()) {
+  it("D7.4 D21.6 D28.11: o ambiente de cada processo do Compose passa na validação da config (sem o .env.test por trás); o realtime, na dele", () => {
+    for (const [name, service, entry] of processServices()) {
       const env = service.environment ?? {};
       let error: string | undefined;
       try {
-        loadConfig(env);
+        if (entry === REALTIME_ENTRY) loadRealtimeConfig(env);
+        else loadConfig(env);
       } catch (thrown) {
         error = thrown instanceof Error ? thrown.message : String(thrown);
       }
@@ -107,10 +140,14 @@ describe("D7.4 D21.2: topologia do Compose", () => {
     }
   });
 
-  it("D27.3 D27.6: o accounting-consumer conecta com o accounting_app, e só ele; a config própria do accounting valida", () => {
+  it("D27.3 D27.6 D28.11: o accounting-consumer conecta com o accounting_app, e só ele; o realtime não recebe credencial de banco; a config própria do accounting valida", () => {
     for (const [name, service, entry] of processServices()) {
       const env = service.environment ?? {};
       const accounting = entry === "main-accounting-consumer.ts";
+      if (entry === REALTIME_ENTRY) {
+        expect({ name, user: env.DB_USER, password: env.DB_PASSWORD }).toEqual({ name, user: undefined, password: undefined });
+        continue;
+      }
       expect({ name, user: env.DB_USER }).toEqual({ name, user: accounting ? "accounting_app" : "wagering_app" });
       if (!accounting) continue;
       let error: string | undefined;

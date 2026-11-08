@@ -49,10 +49,10 @@ jobs:
           mkdir -p logs/ci
           bun run check 2>&1 | tee logs/ci/check.log
 
-      # D25.3: no Linux nada é pulado. Os 6 pulados do Windows são o SIGTERM
-      # real (sigterm.spec.ts, D21.2, e accounting-sigterm.spec.ts, D27.9);
-      # aqui eles precisam ter passado.
-      - name: conferir 0 skip e os 6 SIGTERM reais
+      # D25.3: no Linux nada é pulado. Os 7 pulados do Windows são o SIGTERM
+      # real (sigterm.spec.ts, D21.2; accounting-sigterm.spec.ts, D27.9; e
+      # realtime-sigterm.spec.ts, D28.12); aqui eles precisam ter passado.
+      - name: conferir 0 skip e os 7 SIGTERM reais
         run: |
           log=$(sed 's/\x1b\[[0-9;]*m//g' logs/ci/check.log)
           skipped=$(grep -E '^\s*[1-9][0-9]* (skip|todo)$' <<<"$log" || true)
@@ -64,8 +64,8 @@ jobs:
           sigterm=$(grep -E '^\(pass\) .*recebe SIGTERM' <<<"$log" || true)
           echo "$sigterm"
           count=$(grep -c . <<<"$sigterm" || true)
-          if [ "$count" -ne 6 ]; then
-            echo "::error::esperados 6 testes de SIGTERM real passando; encontrados $count (D21.2, D25.3, D27.9)"
+          if [ "$count" -ne 7 ]; then
+            echo "::error::esperados 7 testes de SIGTERM real passando; encontrados $count (D21.2, D25.3, D27.9, D28.12)"
             exit 1
           fi
 
@@ -106,10 +106,25 @@ jobs:
       # Literal, com --build (D23.8). A aceitação espera a api ficar pronta (D23.6).
       - run: bun run infra:up
 
-      - name: aceitação, 1ª rodada (idempotentReplay false)
+      # D28.13: o realtime:watch segue a wallet do exemplo antes da 1ª rodada e
+      # precisa ver o evento da BET do §9 chegar pelo nginx (/realtime).
+      - name: aceitação, 1ª rodada (idempotentReplay false), com o realtime:watch
         run: |
           mkdir -p logs/ci
+          bun run realtime:watch 0192f291-27dd-7d3f-8071-5f8685deef37 --exit-after 1 --timeout 300 > logs/ci/realtime-watch.log 2>&1 &
+          watch_pid=$!
+          for _ in $(seq 1 180); do
+            grep -q "GET /wallets" logs/ci/realtime-watch.log && break
+            kill -0 "$watch_pid" 2>/dev/null || break
+            sleep 1
+          done
           bun run acceptance 2>&1 | tee logs/ci/acceptance-1.log
+          if ! wait "$watch_pid"; then
+            echo "::error::o realtime:watch não recebeu o evento da BET (D28.13)"
+            cat logs/ci/realtime-watch.log
+            exit 1
+          fi
+          cat logs/ci/realtime-watch.log
 
       - name: aceitação, 2ª rodada (idempotentReplay true)
         run: bun run acceptance 2>&1 | tee logs/ci/acceptance-2.log

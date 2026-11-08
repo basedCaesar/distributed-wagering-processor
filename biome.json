@@ -188,6 +188,85 @@
           }
         }
       }
+    },
+    {
+      "includes": ["**/modules/realtime/domain/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@nestjs/*",
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "zod",
+                      "**/application/**",
+                      "**/infra/**",
+                      "**/wagering/**",
+                      "**/accounting/**"
+                    ],
+                    "message": "D28.1: o domínio do realtime não importa camadas externas, o núcleo nem o accounting."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/modules/realtime/application/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@mikro-orm/*",
+                      "aws-sdk",
+                      "@aws-sdk/*",
+                      "pino",
+                      "**/infra/**",
+                      "**/wagering/**",
+                      "**/accounting/**"
+                    ],
+                    "message": "D28.1: a aplicação do realtime não importa infraestrutura, o núcleo nem o accounting."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/modules/realtime/infra/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@mikro-orm/*", "**/wagering/**", "**/accounting/**", "**/shared/orm/**"],
+                    "message": "D28.1: o realtime não usa banco nem importa o núcleo ou o accounting; o contrato é o envelope do §11."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

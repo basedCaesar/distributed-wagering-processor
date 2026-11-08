@@ -56,6 +56,8 @@ export const METRIC_LABEL_VALUES = {
   sqs_dlq_depth: { queue: ["wager_transactions_dlq", "event_auditor_dlq", "accounting_dlq"] },
   outbox_pending_events: {},
   outbox_lag_seconds: {},
+  realtime_connections: {},
+  realtime_events_total: { outcome: ["forwarded", "ignored", "invalid", "stale"] },
 } as const satisfies Record<string, Record<string, readonly string[]>>;
 
 type Labels = typeof METRIC_LABEL_VALUES;
@@ -102,6 +104,27 @@ export const auditedEventsOutOfOrderTotal = new Counter({
 export const accountingEntriesPostedTotal = new Counter({
   name: "accounting_entries_posted_total",
   help: "Lançamentos de partidas dobradas gravados no diário do accounting",
+  registers: [metricsRegistry],
+});
+
+/** Conexões WebSocket abertas nesta instância do `realtime` (D28.11). */
+export const realtimeConnections = new Gauge({
+  name: "realtime_connections",
+  help: "Conexões WebSocket abertas nesta instância do realtime",
+  registers: [metricsRegistry],
+});
+
+export type RealtimeEventOutcome = Labels["realtime_events_total"]["outcome"][number];
+
+/**
+ * Mensagens da fila da instância do `realtime`, pelo desfecho (D28.6,
+ * D28.7, D28.11): enviada aos sockets, `eventType` ignorado, inválida ou
+ * descartada por idade.
+ */
+export const realtimeEventsTotal = new Counter({
+  name: "realtime_events_total",
+  help: "Mensagens da fila do realtime por desfecho (forwarded, ignored, invalid, stale)",
+  labelNames: ["outcome"],
   registers: [metricsRegistry],
 });
 

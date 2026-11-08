@@ -4,7 +4,7 @@ Decisões, trade-offs e limitações do processador de transações de apostas (
 
 ## Visão geral
 
-Um serviço só (um código, um banco, D12.2), rodando como vários processos com a mesma imagem (D7.4): `api` ×3 atrás de um nginx, `consumer` ×3, `outbox-publisher` ×2, `pending-worker` ×2 e `event-auditor` ×1. Ao lado dele, um serviço separado que só conversa por eventos: o `accounting-consumer` ×2, com o diário de partidas dobradas (D12.1, D27, seção abaixo). O diagrama dos processos está no [`README.md`](README.md#processos).
+Um serviço só (um código, um banco, D12.2), rodando como vários processos com a mesma imagem (D7.4): `api` ×3 atrás de um nginx, `consumer` ×3, `outbox-publisher` ×2, `pending-worker` ×2 e `event-auditor` ×1. Ao lado dele, dois serviços separados que só conversam por eventos: o `accounting-consumer` ×2, com o diário de partidas dobradas (D12.1, D27), e o `realtime` ×2, com as notificações por WebSocket (D12.4, D28); seções abaixo. O diagrama dos processos está no [`README.md`](README.md#processos).
 
 - O HTTP (§9) e a fila (§10) chamam **o mesmo use case** (`SubmitWagerTransactionUseCase`, R-10-03).
 - Toda escrita financeira acontece numa transação SQL só, aberta pelo use case: transação, saldo, ledger, inbox, outbox e a "cutucada" das pendentes (R-05-02, D6.5).
@@ -195,6 +195,19 @@ O ledger do núcleo é de entrada simples por wallet (§6.4). O diferencial de p
 
 Detalhes, diagrama do fluxo e tabela de lançamentos: [`src/modules/accounting/README.md`](src/modules/accounting/README.md).
 
+## Tempo real por WebSocket (V-01, V-03, D12.4, D28)
+
+A vaga pede "fluxos com WebSockets" (não está no enunciado). O `realtime` é um **serviço separado**, sem banco, que lê os eventos do tópico SNS e os envia aos clientes que seguem cada wallet, em `ws://localhost:3000/realtime` (pelo nginx). O núcleo não muda.
+
+- **Notificação, não fonte da verdade** (D28.8): a entrega é por melhor esforço, em ordem por wallet. O cliente parte do `GET /wallets/:id` e aplica só os eventos com `walletVersion` maior; num furo ou ao reconectar, refaz o GET. É o que o `bun run realtime:watch` faz.
+- **Autenticação no 1º frame** (D28.2): o mesmo token do Keycloak, validado como na api; o `WebSocket` do navegador não manda header, e o token na query string iria para o log. A conexão fecha quando o token vence.
+- **Permissões da D10.2** (D28.3): qualquer token segue qualquer wallet (consultar wallet é aberto aos dois papéis), mas os eventos de transação só chegam ao provedor dono e ao operador. Projeção por lista fechada, sem `playerId` (D28.4).
+- **Uma fila por instância** (D28.5): numa fila comum, cada evento iria para uma instância só. Cada instância tem um id estável e a fila dela, criada e assinada pela infra; o realtime só usa SQS, e o SNS continua só no publisher (D20.10).
+- **Descarte por idade, sem purge** (D28.6): o que ficou na fila antes da subida é apagado sem envio, pelo `SentTimestamp`.
+- **Sem inbox nem DLQ** (D28.7): exceção registrada à regra da DLQ. O evento já está guardado na outbox e nas filas com DLQ do auditor e do accounting; a fila do realtime é efêmera.
+
+Protocolo, diagramas do fluxo e da reconexão: [`src/modules/realtime/README.md`](src/modules/realtime/README.md).
+
 ## Limitações
 
 - **Cadeia de reversão limitada:** depois de `BET ← REFUND ← ROLLBACK`, a `BET` não pode ser revertida de novo (o "estado líquido" não cabe num índice único, D1.2).
@@ -206,6 +219,7 @@ Detalhes, diagrama do fluxo e tabela de lançamentos: [`src/modules/accounting/R
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
 - **Partidas dobradas com consistência eventual:** o diário fica atrás do núcleo enquanto os eventos não foram consumidos (o `accounting-consumer`, como o auditor, faz uma transação por evento, D26.13). Ele só vê os eventos publicados depois de a fila dele existir: sem backfill. Uma metade que nunca chegasse deixaria o par sem lançamento, visível só na reconciliação (D27.7, D27.9).
+- **WebSocket com instâncias fixas:** cada instância do `realtime` precisa de um id estável e da fila dela na infra. Réplicas de nome dinâmico (escala automática) exigiriam criar a fila e a assinatura na subida e varrer as órfãs, o que poria o SNS fora do publisher (D20.10). A entrega ao cliente é por melhor esforço: o que acontece enquanto ele está fora só aparece no GET (D28.8, D28.14).
 - **Laço SQS genérico dentro do núcleo:** o accounting importa o `SqsConsumer` de `wagering/infra/messaging/`, limitado por lint e teste; movê-lo para `src/shared/messaging/` é dívida técnica (D27.8).
 - **Capacidade medida só numa máquina de desenvolvimento:** o teste de carga (`bun run test:load`, D26) roda o k6 e os 11 processos na mesma VM do Docker Desktop, contra o LocalStack. Os números valem para comparar degraus e cenários, não como capacidade de produção. A hot wallet é serializada pelo lock pessimista da wallet (D7.2), por desenho. Números e análise em [`docs/load-test.md`](docs/load-test.md).
 
@@ -221,6 +235,7 @@ Detalhes, diagrama do fluxo e tabela de lançamentos: [`src/modules/accounting/R
 | Outbox, publisher e auditor | [`src/modules/wagering/infra/outbox/README.md`](src/modules/wagering/infra/outbox/README.md) |
 | Worker de pendentes | [`src/modules/wagering/infra/workers/README.md`](src/modules/wagering/infra/workers/README.md) |
 | Partidas dobradas (plano de contas, diário, reconciliação, D27) | [`src/modules/accounting/README.md`](src/modules/accounting/README.md) |
+| Tempo real (WebSocket, protocolo, permissões, reconexão, D28) | [`src/modules/realtime/README.md`](src/modules/realtime/README.md) |
 | Autenticação e Keycloak | [`src/shared/auth/README.md`](src/shared/auth/README.md), [`keycloak/README.md`](keycloak/README.md) |
 | Erros (`classifyError`) | [`src/shared/errors/README.md`](src/shared/errors/README.md) |
 | Logs e métricas | [`src/shared/logger/README.md`](src/shared/logger/README.md), [`src/shared/metrics/README.md`](src/shared/metrics/README.md) |

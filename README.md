@@ -15,7 +15,7 @@ Processador distribuído de transações de apostas (`BET`, `WIN`, `LOSS`, `REFU
 - Docker com Docker Compose
 - `curl` (já vem no Linux, no macOS e no Windows 10+)
 
-Portas usadas pelo Compose de dev: 3000 (api), 5432 (Postgres), 4566 (LocalStack) e 8080 (Keycloak).
+Portas usadas pelo Compose de dev: 3000 (api e WebSocket em `/realtime`), 5432 (Postgres), 4566 (LocalStack) e 8080 (Keycloak).
 
 ## Começo rápido
 
@@ -33,6 +33,14 @@ O `bun run acceptance` espera a api ficar pronta (até 3 min), pede os tokens ao
 - as consultas e a reconciliação.
 
 Cada passo é conferido, e qualquer divergência faz o comando sair com erro. O §10 é conferido pela linha da inbox do consumidor (`msg-123`), consultada com o papel da app dentro do container do Postgres. Pode rodar de novo: o resultado é o mesmo, com `idempotentReplay: true`, e o §10 avisa que a inbox já tinha a mensagem, sem afirmar um novo processamento (D23.6). `ACCEPTANCE_API_URL` e `ACCEPTANCE_KEYCLOAK_URL` trocam os hosts, se precisar (D23.7). A aceitação fica fora do `bun run check`, porque precisa do Compose de dev completo.
+
+**Tempo real (D28).** Para ver o saldo da wallet do exemplo mudar ao vivo enquanto roda os `curl` do §9 noutro terminal:
+
+```bash
+bun run realtime:watch 0192f291-27dd-7d3f-8071-5f8685deef37
+```
+
+Ele segue a wallet por WebSocket (`ws://localhost:3000/realtime`, com o token do Keycloak), faz o GET inicial e imprime uma linha por evento. O WebSocket é notificação; a verdade é o `GET /wallets/:id`. Protocolo, permissões e reconexão em [`src/modules/realtime/README.md`](src/modules/realtime/README.md).
 
 ## Comandos
 
@@ -55,6 +63,7 @@ bun run test:proofs       # remove cada proteção e exige que o teste dela falh
 bun run acceptance        # exemplos do §9 e do §10, literalmente, contra o Compose de dev
 bun run test:load         # teste de carga (k6) contra o Compose de dev, 3 rodadas; --rounds N para iterar (D26)
 bun run accounting:reconcile [--player-prefix p] [--wait s]  # diário de partidas dobradas × núcleo, num container na rede do Compose de dev (D27.7)
+bun run realtime:watch <walletId> [--client provider-a]      # segue uma wallet por WebSocket e imprime cada evento (D28.13)
 ```
 
 `bun run check` e `bun run test:proofs` precisam da infraestrutura de teste no ar (`bun run infra:test:up`); alguns testes também usam o Docker direto (um Postgres próprio, D21.7, e o `docker compose config`). No Compose de dev, o serviço `migrate` aplica as migrations antes dos processos subirem.
@@ -86,13 +95,13 @@ GitHub Actions, em Linux (`ubuntu-latest`), com o Bun 1.4.4 (D25):
 
 | Workflow | Quando | O que roda |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | todo push e pull request | job `check`: `infra:test:up` e `bun run check` inteiro; falha se algum teste for pulado e exige os 5 `SIGTERM` reais (D25.3). Job `acceptance`: `infra:up` e `bun run acceptance` duas vezes (a 2ª é o replay) |
+| [`ci.yml`](.github/workflows/ci.yml) | todo push e pull request | job `check`: `infra:test:up` e `bun run check` inteiro; falha se algum teste for pulado e exige os 7 `SIGTERM` reais (D25.3, D27.9, D28.12). Job `acceptance`: `infra:up`, `bun run acceptance` duas vezes (a 2ª é o replay), com o `realtime:watch` seguindo a wallet do exemplo na 1ª e exigindo o evento da BET (D28.13), e `accounting:reconcile` (D27.7) |
 | [`proofs.yml`](.github/workflows/proofs.yml) | manual (`workflow_dispatch`) e toda segunda, 06:00 UTC | `bun run test:proofs` (D25.5) |
 
 O badge no topo mostra o resultado do `ci.yml` no último push. Para ver uma rodada:
 
 1. **Actions** no GitHub → o workflow → a rodada.
-2. Cada job mostra o log de cada step. No `check`, o step "conferir 0 skip e os 5 SIGTERM reais" lista os 5 testes do sinal real que passaram.
+2. Cada job mostra o log de cada step. No `check`, o step "conferir 0 skip e os 7 SIGTERM reais" lista os 7 testes do sinal real que passaram.
 3. Se a rodada falhou, os logs ficam em **Artifacts**, no fim da página da rodada, por 14 dias: `check-logs`, `acceptance-logs` ou `proofs-logs`. É a pasta `logs/` do runner, com a saída dos testes, o log de cada processo separado (`logs/processes/`) e os logs dos containers (`logs/ci/compose-*.log`).
 
 Para rodar as provas na hora: **Actions** → **Proofs** → **Run workflow**.
@@ -261,22 +270,28 @@ flowchart LR
     sns --> accq[["SQS wagering-events-accounting.fifo"]]
     accq --> accounting["accounting-consumer ×2<br/>(serviço separado, D27)"]
     accounting -- "schema accounting:<br/>diário de partidas dobradas" --> pg
+    sns --> rtq[["SQS wagering-events-realtime-realtime-N.fifo<br/>(uma por instância)"]]
+    rtq --> realtime["realtime ×2<br/>(serviço separado, sem banco, D28)"]
+    client([Cliente WebSocket]) -- "ws :3000/realtime" --> nginx
+    nginx -- "upgrade" --> realtime
 ```
 
 | Processo | Instâncias | Entrypoint | O que faz | Como as instâncias não se atrapalham |
 |---|---|---|---|---|
-| `nginx` | 1 | — | balanceia as 3 `api` na porta 3000; repete numa outra só erro de conexão (nunca um POST que já chegou) | — |
+| `nginx` | 1 | — | balanceia as 3 `api` na porta 3000 e o WebSocket `/realtime` nas 2 `realtime`; repete numa outra só erro de conexão (nunca um POST que já chegou) | — |
 | `api` | 3 | `main-api.ts` | HTTP (§9) | lock da wallet + idempotência sob o lock (D3.6, D7.2) |
 | `consumer` | 3 | `main-consumer.ts` | fila do §10, o mesmo use case do HTTP | inbox por `messageId` + lock da wallet (D3.7, D19.4) |
 | `outbox-publisher` | 2 | `main-outbox-publisher.ts` | publica a outbox no SNS, em ordem por wallet | claim da cabeça com `SKIP LOCKED`, lease e dono (D20.3, D20.5) |
 | `pending-worker` | 2 | `main-pending-worker.ts` | resolve as `PENDING_REFERENCE` | claim com `SKIP LOCKED`, lease e dono (D18.2, D18.10) |
 | `event-auditor` | 1 | `main-event-auditor.ts` | confere a ordem e deduplica os eventos | inbox por `eventId` (D9.7, D20.1) |
 | `accounting-consumer` | 2 | `main-accounting-consumer.ts` | diário de partidas dobradas, com papel próprio no banco ([`accounting`](src/modules/accounting/README.md)) | inbox por `eventId` + lock da conta da wallet (D27.4) |
+| `realtime` | 2 (`realtime-1`, `realtime-2`) | `main-realtime.ts` | WebSocket: notifica os clientes dos eventos das wallets que eles seguem, sem banco ([`realtime`](src/modules/realtime/README.md)) | uma fila por instância, pelo id estável: cada uma recebe todos os eventos (D28.5) |
 
 **Shutdown (D8.5, D8.6, D21.2).** O bun é o PID 1 de cada container (`ENTRYPOINT`/`CMD` em forma exec, testado em `test/integration/infra/compose-topology.spec.ts`), então o `SIGTERM` do `docker compose stop` chega a ele, e o Compose dá 30 s para parar:
 - `api`: readiness falsa, para de aceitar, termina as requisições em andamento (até 10 s) e só então fecha o banco;
 - `consumer`, `event-auditor` e `accounting-consumer`: terminam o lote ou o long poll e devolvem o que não começaram (D19.9);
-- `outbox-publisher` e `pending-worker`: terminam o item atual; os leases dos outros vencem sozinhos.
+- `outbox-publisher` e `pending-worker`: terminam o item atual; os leases dos outros vencem sozinhos;
+- `realtime`: fecha os sockets com `1001` (os clientes reconectam na outra instância pelo nginx) e deixa o long poll terminar; a fila e a assinatura ficam (D28.5).
 
 Morto à força no meio da carga, nada se perde nem duplica: a transação desfeita volta pela reentrega ou pelo reenvio do provedor (mesma key), o lease vence e outra instância continua. É o R-13-C8, provado com todos os processos separados em `test/concurrency/restart.spec.ts`.
 
@@ -298,7 +313,7 @@ Morto à força no meio da carga, nada se perde nem duplica: a transação desfe
 
 | Serviço | Dev (`docker-compose.yml`) | Testes (`docker-compose.test.yml`) |
 |---|---|---|
-| nginx (api ×3) | `localhost:3000` | — (os testes sobem a api no próprio processo ou em processos separados) |
+| nginx (api ×3, realtime ×2 em `/realtime`) | `localhost:3000` | — (os testes sobem a api e o realtime no próprio processo ou em processos separados) |
 | Postgres 16 | `localhost:5432`, banco `wagering` | `localhost:5433`, banco `wagering_test` |
 | LocalStack 3 (SQS, SNS) | `localhost:4566` | `localhost:4567` |
 | Keycloak 26.7.5 (realm `wagering`) | `localhost:8080` (admin `admin`/`admin`, só dev) | `localhost:8081` (só o e2e) |
@@ -319,6 +334,7 @@ O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto 
 | `wagering-events-auditor.fifo` | FIFO, assinante do tópico (entrega raw) | D9.7 |
 | `wagering-events-accounting.fifo` | FIFO, assinante do tópico (entrega raw), redrive para a DLQ própria com `maxReceiveCount = 20` | D27.5 |
 | `wagering-events-accounting-dlq.fifo` | FIFO | D27.5 |
+| `wagering-events-realtime-realtime-1.fifo`, `…-realtime-2.fifo` | FIFO, assinantes do tópico (entrega raw), retenção de 300 s, visibilidade de 30 s, **sem DLQ** (exceção da D28.7) | D28.5 |
 
 Por causa da deduplicação por conteúdo, a mensagem do §10 entra com só `--message-group-id` (D8.1); o comando completo está em [§10 Mensagem na fila](#10-mensagem-na-fila).
 
@@ -332,6 +348,7 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Persistência (schema, garantias no banco, ORM, migrations) | [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md) |
 | Use cases (abrir wallet, consultas, reconciliação) | [`src/modules/wagering/application/README.md`](src/modules/wagering/application/README.md) |
 | Partidas dobradas (contexto `accounting`: plano de contas, diário, reconciliação, D27) | [`src/modules/accounting/README.md`](src/modules/accounting/README.md) |
+| Tempo real (contexto `realtime`: WebSocket, protocolo, permissões, reconexão, D28) | [`src/modules/realtime/README.md`](src/modules/realtime/README.md) |
 | API HTTP das wallets (endpoints, permissões, cursor) — Swagger em `/docs` | [`src/modules/wagering/infra/http/README.md`](src/modules/wagering/infra/http/README.md) |
 | Autenticação (JWT, papéis, guard) | [`src/shared/auth/README.md`](src/shared/auth/README.md) |
 | Keycloak (realm, clients, emissor) | [`keycloak/README.md`](keycloak/README.md) |
@@ -345,6 +362,6 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Health | [`src/shared/health/README.md`](src/shared/health/README.md) |
 | Testes (suítes, regras, processos separados, plataforma) | [`test/README.md`](test/README.md) |
 | Provas (cada proteção removida derruba um teste) | [`proofs/README.md`](proofs/README.md) |
-| nginx (balanceador das 3 api) | [`nginx/README.md`](nginx/README.md) |
+| nginx (balanceador das 3 api e do WebSocket) | [`nginx/README.md`](nginx/README.md) |
 
 Os testes da infraestrutura de filas estão em `test/integration/localstack-infra.spec.ts`.
