@@ -62,6 +62,26 @@
       }
     },
     {
+      "includes": ["**/load/lib/money.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "Number": "Dinheiro nunca usa number (D2 CLAUDE.md). Use centavos bigint.",
+                  "parseInt": "Dinheiro nunca usa parseInt (D2 CLAUDE.md). Use centavos bigint.",
+                  "parseFloat": "Dinheiro nunca usa parseFloat (D2 CLAUDE.md). Use centavos bigint.",
+                  "Math": "Dinheiro nunca usa Math.* (D2 CLAUDE.md). Use centavos bigint."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "includes": ["**/application/**"],
       "linter": {
         "rules": {

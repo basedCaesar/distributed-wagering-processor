@@ -1,3 +1,5 @@
+import { coveredAmount } from "./money.ts";
+
 /**
  * O experimento do `test:load` (D26.2), fixo no código: cenários, degraus,
  * durações e tamanhos. Só o número de rodadas vem da linha de comando.
@@ -38,8 +40,22 @@ export const LOAD_PLAN = {
       { rate: 100, durationS: 30 },
     ],
   },
-  /** C: cada key enviada `copies` vezes quase ao mesmo tempo (um VU por cópia). */
-  duplicates: { wallets: 10, initialBalance: "100.00", betAmount: "1.00", keys: 50, copies: 20, maxDurationS: 120 },
+  /**
+   * C: cada key enviada `copies` vezes no mesmo instante (um VU por cópia).
+   * As cópias da key k partem em `início + k × slotS`, com o início calculado
+   * no setup `leadS` à frente; o slot é maior que o p99 de uma key (~2,3 s)
+   * para uma key não atrasar a próxima.
+   */
+  duplicates: {
+    wallets: 10,
+    initialBalance: "100.00",
+    betAmount: "1.00",
+    keys: 50,
+    copies: 20,
+    leadS: 3,
+    slotS: 3,
+    maxDurationS: 190,
+  },
   /** D: mensagens do §10 pela fila, `MessageGroupId` = walletId (D8.1). */
   queue: { wallets: 100, initialBalance: "100.00", betAmount: "1.00", messages: 2000, batchSize: 10 },
   /** Reenvios de um `503` com a mesma key, respeitando o `Retry-After` (D26.5). */
@@ -104,23 +120,23 @@ export function parseLoadArgs(argv: readonly string[]): LoadArgs {
   return { rounds, scenarios };
 }
 
-function centsOf(amount: string): number {
-  const match = /^(\d+)\.(\d{2})$/.exec(amount);
-  if (match === null) throw new Error(`valor fora do formato 0.00: ${amount}`);
-  return Number(match[1]) * 100 + Number(match[2]);
-}
-
-function formatCents(cents: number): string {
-  const reais = Math.floor(cents / 100);
-  const rest = cents % 100;
-  return `${reais}.${rest < 10 ? "0" : ""}${rest}`;
-}
-
-/** Saldo da hot wallet do degrau: cobre a fração configurada das BETs previstas (D26.2). */
+/** Saldo da hot wallet do degrau: cobre a fração configurada das BETs previstas (D26.2), em centavos bigint (D2). */
 export function hotWalletBalance(step: RateStep, betAmount: string): string {
-  const { numerator, denominator } = LOAD_PLAN.hotWallet.coveredFraction;
-  const covered = Math.floor((step.rate * step.durationS * numerator) / denominator);
-  return formatCents(covered * centsOf(betAmount));
+  return coveredAmount(step.rate * step.durationS, LOAD_PLAN.hotWallet.coveredFraction, betAmount);
+}
+
+/** C (D26.6): tag das respostas originais, para contá-las key a key no `--out json`. */
+export const DUPLICATE_KEY_TAG = "dupkey";
+
+/** C (D26.2): instante absoluto em que as cópias da key `key` partem juntas. */
+export function duplicateSendAtMs(startAtMs: number, key: number): number {
+  return startAtMs + key * LOAD_PLAN.duplicates.slotS * 1000;
+}
+
+/** C: do setup ao instante da última key. */
+export function duplicateScheduleS(): number {
+  const { leadS, keys, slotS } = LOAD_PLAN.duplicates;
+  return leadS + keys * slotS;
 }
 
 /** Quanto tempo o token do passo precisa valer: o passo e o prazo extra do k6. */

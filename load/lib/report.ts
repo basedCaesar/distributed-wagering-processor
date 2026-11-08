@@ -33,6 +33,13 @@ export interface StepResult {
   /** Operações que esgotaram os reenvios com `503`. */
   gaveUp: number;
   unexpected: number;
+  /**
+   * Operações sem desfecho: estavam em andamento quando o k6 encerrou o passo
+   * (fim do `gracefulStop`). O k6 corta a requisição (status 0, erro 1050) e
+   * descarta as métricas emitidas depois, então não contam como erro nem como
+   * inesperado. É `ops − (resolvidas + desistências + inesperados)`.
+   */
+  interrupted: number;
   /** Iterações que o k6 não conseguiu iniciar (faltou VU): o cliente virou gargalo. */
   droppedIterations: number;
   /** Operações resolvidas (200/422) por segundo de passo. */
@@ -45,8 +52,20 @@ export interface StepResult {
   /** Espera do lock da wallet, em s, estimada pelos buckets (D22.5). */
   lockWait: { p50: Quantile; p95: Quantile; p99: Quantile };
   retries: Record<string, number>;
-  /** Amostrado a cada 1 s nos publishers durante o passo (D22.6). */
-  outboxLag: { max: number | undefined; p95: number | undefined; pendingMax: number | undefined; drainS: number | undefined };
+  /**
+   * Amostrado a cada 1 s nos publishers durante o passo (D22.6). A espera
+   * depois do passo é medição (D26.6): `drainTimedOut` = não esvaziou no teto
+   * do passo, sem reprovar.
+   */
+  outboxLag: {
+    max: number | undefined;
+    p95: number | undefined;
+    pendingMax: number | undefined;
+    drainS: number | undefined;
+    drainTimedOut?: boolean;
+  };
+  /** Só C: aumento de `wagering_duplicates_total` no passo, por camada (D17.7). */
+  duplicates?: { fastPath: number; lock: number; uniqueIndex: number };
   /** Só D: do 1º envio até a fila vazia. */
   queueDrainS?: number;
   /** Latência de processamento em volta do use case (D22.7), estimada pelos buckets, em s. */
@@ -118,12 +137,13 @@ function methodology(): string {
     `- Aquecimento descartado: ${p.warmup.rate} req/s por ${p.warmup.durationS} s antes do cenário A.`,
     `- A (throughput): ${p.throughput.wallets} wallets, 70% BET e 30% WIN sem referência, chaves únicas, degraus de ${p.throughput.steps.map((s) => s.rate).join(" → ")} req/s, ${p.throughput.steps[0]?.durationS} s cada.`,
     `- B (hot wallet): uma wallet nova por degrau, BETs de chaves únicas, saldo para 70% delas; degraus de ${p.hotWallet.steps.map((s) => s.rate).join(" → ")} req/s.`,
-    `- C (duplicatas): ${p.duplicates.keys} keys, cada uma enviada ${p.duplicates.copies} vezes quase ao mesmo tempo (um VU por cópia), em ${p.duplicates.wallets} wallets.`,
+    `- C (duplicatas): ${p.duplicates.keys} keys, cada uma enviada ${p.duplicates.copies} vezes no mesmo instante (um VU por cópia; as cópias da key k esperam o instante absoluto \`início + k × ${p.duplicates.slotS} s\`, calculado no setup), em ${p.duplicates.wallets} wallets. Reprova se alguma key não tiver exatamente 1 resposta original ou se nenhuma duplicata for pega no lock (sem disputa de verdade).`,
     `- D (fila): ${p.queue.messages} mensagens do §10 em ${p.queue.wallets} wallets (\`MessageGroupId\` = walletId), por \`SendMessageBatch\` direto na API HTTP do SQS do LocalStack (atalho só do LocalStack, D26.9).`,
     `- \`503\` é transitório (D5): o cliente reenvia com a mesma key, respeitando o \`Retry-After\`, até ${p.maxAttempts} tentativas. Latência "por tentativa" é cada requisição; "por operação" inclui as esperas dos reenvios.`,
     "- Taxa de erro = (desistências depois dos reenvios + status inesperados) / operações. `503` na tentativa aparece à parte.",
+    "- Interrompidas (k6): operações em andamento quando o k6 encerra o passo (fim do `gracefulStop`). O k6 corta a requisição (status 0, erro 1050) e descarta as métricas emitidas depois, então elas ficam sem desfecho: não são erro nem status inesperado. O efeito delas no banco é coberto pela correção (transações do passo entre as confirmadas e as enviadas).",
     "- Conflitos de lock, espera do lock, retries e latência do consumidor: diferença do `/metrics` antes e depois do passo, somada entre as instâncias. Percentis dessas métricas são **estimados pelos buckets** do histograma (erro do tamanho do bucket); os do k6 usam todas as amostras.",
-    `- Outbox lag: o \`outbox_lag_seconds\` dos 2 publishers, lido a cada 1 s durante o passo; depois do passo, o tempo até a outbox esvaziar (teto de ${p.drainTimeoutS} s).`,
+    `- Outbox lag: o \`outbox_lag_seconds\` dos 2 publishers, lido a cada 1 s durante o passo; depois do passo, o tempo até a outbox esvaziar (teto de ${p.drainTimeoutS} s). Essa espera é medição e não reprova (D26.6); o critério de correção é a outbox vazia no fim da rodada, dentro do teto.`,
     "- Tokens: um por passo, pedido antes do passo e fora da medição (D26.3).",
     `- Repouso antes de cada passo (D26.11): outbox vazia, nenhuma sessão da app ativa no banco e nenhuma operação concluída entre duas leituras do \`/metrics\` seguidas, com teto de ${p.quiesceTimeoutS} s; o tempo esperado e o motivo (em quantas leituras cada condição segurou) aparecem por passo. O \`event-auditor\` fica fora da condição (D26.13); a fila dele e a vazão são registradas antes de cada passo como contaminação conhecida.`,
     "- Latência de processamento (D22.7): em volta do use case, por canal, estimada pelos buckets; separa o tempo dentro da api do tempo de fila no nginx e no pool de conexões.",
@@ -134,8 +154,8 @@ function methodology(): string {
 
 function stepRows(steps: StepResult[]): string {
   const header = [
-    "| Passo | Alvo | Operações | Throughput (op/s) | p50 | p95 | p99 | máx | p99 por operação | `503` (tentativas) | Desistências | Inesperados | Descartadas (k6) | Taxa de erro |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| Passo | Alvo | Operações | Throughput (op/s) | p50 | p95 | p99 | máx | p99 por operação | `503` (tentativas) | Desistências | Inesperados | Interrompidas (k6) | Descartadas (k6) | Taxa de erro |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   const rows = steps.map((s) =>
     [
@@ -151,6 +171,7 @@ function stepRows(steps: StepResult[]): string {
       s.transientAttempts,
       s.gaveUp,
       s.unexpected,
+      s.interrupted,
       s.droppedIterations,
       percent(s.gaveUp + s.unexpected, s.ops),
     ].join(" | "),
@@ -184,10 +205,27 @@ function concurrencyRows(steps: StepResult[]): string {
       optional(s.outboxLag.max, " s"),
       optional(s.outboxLag.p95, " s"),
       optional(s.outboxLag.pendingMax, "", 0),
-      optional(s.outboxLag.drainS, " s"),
+      s.outboxLag.drainTimedOut === true ? `> ${LOAD_PLAN.drainTimeoutS} s` : optional(s.outboxLag.drainS, " s"),
     ].join(" | "),
   );
   return [...header, ...rows.map((r) => `| ${r} |`)].join("\n");
+}
+
+function duplicateRows(steps: StepResult[]): string {
+  const dup = steps.filter((s) => s.duplicates !== undefined);
+  if (dup.length === 0) return "";
+  const header = [
+    "| Passo | Pegas no fast path | Pegas no lock | Pegas no unique_index |",
+    "|---|---|---|---|",
+  ];
+  const rows = dup.map((s) => `| ${s.label} | ${s.duplicates?.fastPath} | ${s.duplicates?.lock} | ${s.duplicates?.uniqueIndex} |`);
+  return [
+    "",
+    "**Duplicatas (C)**, por camada (`wagering_duplicates_total`, D17.7): o lock é a checagem autoritativa; duplicata no `unique_index` saiu de baixo dele.",
+    "",
+    ...header,
+    ...rows,
+  ].join("\n");
 }
 
 function queueRows(steps: StepResult[]): string {
@@ -253,6 +291,7 @@ export function renderReport(result: LoadResult): string {
       "### Desfechos",
       "",
       outcomeRows(round.steps),
+      duplicateRows(round.steps),
       "",
       "### Conflitos de lock e outbox lag",
       "",

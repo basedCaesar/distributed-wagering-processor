@@ -31,8 +31,14 @@ function healthy(): FullFacts {
       unexpectedRejections: 0,
     },
     steps: [{ ...STEP_A }, { ...STEP_B }],
-    duplicates: { keys: 50, dbTransactions: 50, fresh: 50, unexpected: 0 },
-    queue: { messages: 2000, inbox: 2000, transactions: 2000, dlqDelta: 0, drained: true },
+    duplicates: {
+      keys: 50,
+      dbTransactions: 50,
+      originalsPerKey: Array.from({ length: 50 }, () => 1),
+      unexpected: 0,
+      caughtAt: { lock: 900, uniqueIndex: 0 },
+    },
+    queue: { messages: 2000, inbox: 2000, transactions: 2000, dlqDelta: 0, unexpected: 0, drained: true },
     outboxDrained: true,
   };
 }
@@ -74,6 +80,10 @@ describe("D26.6: veredito da rodada", () => {
 
   it("D26.6: status inesperado em qualquer passo → falha", () => {
     expect(failuresWith((f) => (f.steps[1] = { ...STEP_B, unexpected: 1 }))).toHaveLength(1);
+    // O aquecimento entra na checagem como os outros passos.
+    expect(failuresWith((f) => f.steps.unshift({ ...STEP_B, name: "aquecimento", unexpected: 1 }))).toEqual([
+      "aquecimento: 1 respostas com status inesperado",
+    ]);
     expect(failuresWith((f) => (f.duplicates.unexpected = 2))).toHaveLength(1);
   });
 
@@ -82,10 +92,38 @@ describe("D26.6: veredito da rodada", () => {
     expect(failuresWith((f) => (f.steps[0] = { ...STEP_A, dbTransactions: 3001 }))).toHaveLength(1);
   });
 
-  it("D26.6 R-13-C1: duplicatas: uma transação por key e no máximo uma resposta original por key", () => {
+  it("D26.6 R-13-C1: duplicatas: uma transação por key", () => {
     expect(failuresWith((f) => (f.duplicates.dbTransactions = 49))).toHaveLength(1);
     expect(failuresWith((f) => (f.duplicates.dbTransactions = 51))).toHaveLength(1);
-    expect(failuresWith((f) => (f.duplicates.fresh = 51))).toHaveLength(1);
+  });
+
+  it("D26.6 R-13-C1: duplicatas: exatamente uma resposta original (idempotentReplay: false) por key", () => {
+    const twoOriginals = failuresWith((f) => (f.duplicates.originalsPerKey[3] = 2));
+    expect(twoOriginals).toHaveLength(1);
+    expect(twoOriginals[0]).toContain("3");
+    const noOriginal = failuresWith((f) => (f.duplicates.originalsPerKey[7] = 0));
+    expect(noOriginal).toHaveLength(1);
+    expect(noOriginal[0]).toContain("7");
+  });
+
+  it("D26.6 R-13-C1: uma key com 2 originais e outra com 0 (o total continua 50) → falha nas duas", () => {
+    const failures = failuresWith((f) => {
+      f.duplicates.originalsPerKey[3] = 2;
+      f.duplicates.originalsPerKey[7] = 0;
+    });
+    expect(failures).toHaveLength(2);
+    expect(failures.join("\n")).toContain("3");
+    expect(failures.join("\n")).toContain("7");
+  });
+
+  it("D26.6 R-13-C1: key sem nenhuma resposta registrada conta como 0 originais", () => {
+    expect(failuresWith((f) => (f.duplicates.originalsPerKey = f.duplicates.originalsPerKey.slice(0, 49)))).toHaveLength(1);
+  });
+
+  it("D26.6 D17.7: duplicatas sem nenhuma pega no lock → falha (não houve disputa de verdade)", () => {
+    expect(failuresWith((f) => (f.duplicates.caughtAt = { lock: 0, uniqueIndex: 0 }))).toHaveLength(1);
+    // O unique_index só é registrado (vai para o relatório).
+    expect(failuresWith((f) => (f.duplicates.caughtAt = { lock: 900, uniqueIndex: 2 }))).toEqual([]);
   });
 
   it("D26.6: fila: inbox e transações = mensagens, nada novo na DLQ, fila vazia", () => {
@@ -93,6 +131,16 @@ describe("D26.6: veredito da rodada", () => {
     expect(failuresWith((f) => (f.queue.transactions = 1999))).toHaveLength(1);
     expect(failuresWith((f) => (f.queue.dlqDelta = 1))).toHaveLength(1);
     expect(failuresWith((f) => (f.queue.drained = false))).toHaveLength(1);
+  });
+
+  it("D26.6: fila: envio com status inesperado tem mensagem própria, separada de 'não esvaziou'", () => {
+    const unexpected = failuresWith((f) => (f.queue.unexpected = 10));
+    expect(unexpected).toHaveLength(1);
+    expect(unexpected[0]).toContain("inesperado");
+    expect(unexpected[0]).not.toContain("esvaziou");
+    const notDrained = failuresWith((f) => (f.queue.drained = false));
+    expect(notDrained[0]).toContain("esvaziou");
+    expect(notDrained[0]).not.toContain("inesperado");
   });
 
   it("D26.12: cenário que não rodou (--scenarios) não entra no veredito", () => {

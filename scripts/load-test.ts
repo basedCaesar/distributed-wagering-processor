@@ -2,7 +2,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { cpus, release, totalmem, version } from "node:os";
 import { join } from "node:path";
 import { evaluateRound, type RoundFacts } from "../load/lib/evaluate";
+import { countPointsByTag, perKey } from "../load/lib/k6-points";
 import {
+  DUPLICATE_KEY_TAG,
   hotWalletBalance,
   LOAD_PLAN,
   parseLoadArgs,
@@ -14,6 +16,7 @@ import {
 import { counterDelta, histogramDelta, histogramQuantile, parsePrometheus, type Scrape } from "../load/lib/prometheus";
 import {
   auditorDrainRate,
+  auditorWindow,
   completedOperations,
   type NotQuietReason,
   notQuietReasons,
@@ -57,6 +60,24 @@ const APP_SERVICES = ["api-1", "api-2", "api-3", "consumer", "outbox-publisher",
 const EXPECTED_INSTANCES = 11;
 
 class LoadFailure extends Error {}
+
+/** Códigos do `fetch` do Bun quando não há conexão (o Compose subindo, um processo reiniciando). */
+const CONNECTION_ERROR_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ConnectionRefused", "ConnectionClosed"]);
+
+function isConnectionError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return error instanceof TypeError && typeof code === "string" && CONNECTION_ERROR_CODES.has(code);
+}
+
+/** Corpo JSON da resposta; corpo que não é JSON vira `undefined` (o status diz o que houve), outro erro sobe. */
+async function jsonOrUndefined<T>(res: Response): Promise<T | undefined> {
+  try {
+    return (await res.json()) as T;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
 
 interface LoadWallet {
   walletId: string;
@@ -178,8 +199,11 @@ async function waitReady(): Promise<void> {
   while (Date.now() < deadline) {
     try {
       if ((await fetch(`${API}/health/ready`)).status === 200) return;
-    } catch {
-      // Sem conexão ainda: o Compose está subindo.
+    } catch (error) {
+      // Só a falta de conexão é esperada (o Compose está subindo); o resto sobe com a causa.
+      if (!isConnectionError(error)) {
+        throw new LoadFailure(`readiness da api: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
     }
     await Bun.sleep(2000);
   }
@@ -274,7 +298,7 @@ async function token(clientId: string): Promise<{ token: string; expiresIn: numb
     method: "POST",
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: secret }),
   });
-  const body = (await res.json().catch(() => undefined)) as { access_token?: string; expires_in?: number } | undefined;
+  const body = await jsonOrUndefined<{ access_token?: string; expires_in?: number }>(res);
   if (res.status !== 200 || body?.access_token === undefined || body.expires_in === undefined) {
     throw new LoadFailure(`token do ${clientId}: status ${res.status}`);
   }
@@ -288,7 +312,7 @@ async function createWallets(auth: string, playerIds: string[], initialBalance: 
       headers: { Authorization: auth, "Content-Type": "application/json" },
       body: JSON.stringify({ playerId, initialBalance: { amount: initialBalance, currency: "BRL" } }),
     });
-    const body = (await res.json().catch(() => undefined)) as { id?: string } | undefined;
+    const body = await jsonOrUndefined<{ id?: string }>(res);
     if (res.status !== 201 || body?.id === undefined) throw new LoadFailure(`POST /wallets: status ${res.status}`);
     return { walletId: body.id, playerId };
   });
@@ -296,17 +320,23 @@ async function createWallets(auth: string, playerIds: string[], initialBalance: 
 
 async function reconcileAll(auth: string, wallets: LoadWallet[]): Promise<RoundFacts["reconciliation"]> {
   const outcomes = await mapPool(wallets, 8, async (w) => {
+    let res: Response;
     try {
-      const res = await fetch(`${API}/wallets/${w.walletId}/reconciliation`, {
+      res = await fetch(`${API}/wallets/${w.walletId}/reconciliation`, {
         method: "POST",
         headers: { Authorization: auth },
       });
-      if (res.status !== 200) return "failed" as const;
-      const body = (await res.json()) as { consistent?: boolean };
-      return body.consistent === true ? ("consistent" as const) : ("inconsistent" as const);
-    } catch {
-      return "failed" as const;
+    } catch (error) {
+      // Sem conexão: a chamada falhou e é contada (reprova, D26.6); o resto sobe com a causa.
+      if (isConnectionError(error)) return "failed" as const;
+      throw new LoadFailure(`reconciliação de ${w.walletId}: ${error instanceof Error ? error.message : String(error)}`, {
+        cause: error,
+      });
     }
+    if (res.status !== 200) return "failed" as const;
+    const body = await jsonOrUndefined<{ consistent?: boolean }>(res);
+    if (body === undefined) return "failed" as const;
+    return body.consistent === true ? ("consistent" as const) : ("inconsistent" as const);
   });
   return {
     expected: wallets.length,
@@ -331,12 +361,18 @@ class Runner {
   ) {}
 
   /** Um container do k6 na rede do Compose; o token vai pelo ambiente, nunca na linha de comando. */
-  async k6(script: string, name: string, env: Record<string, string>, secretEnv: Record<string, string> = {}): Promise<void> {
+  async k6(
+    script: string,
+    name: string,
+    env: Record<string, string>,
+    secretEnv: Record<string, string> = {},
+    runArgs: string[] = [],
+  ): Promise<void> {
     const args = ["docker", "run", "--rm", "--network", this.topo.network, "-v", `${this.outDir}:/out`];
     args.push("-v", `${join(REPO_ROOT, "load")}:/load:ro`);
     for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
     for (const k of Object.keys(secretEnv)) args.push("-e", k);
-    args.push(K6_IMAGE, "run", "--quiet", `/load/k6/${script}`);
+    args.push(K6_IMAGE, "run", "--quiet", ...runArgs, `/load/k6/${script}`);
     const { code, out, err } = await run(args, { env: secretEnv });
     await writeFile(join(this.outDir, `${name}.k6.log`), `${out}${err}`);
     if (code !== 0) throw new LoadFailure(`k6 ${script} (${name}) saiu com ${code}; log em logs/load/.../${name}.k6.log`);
@@ -365,10 +401,11 @@ class Runner {
     auditor: { depth: number; ratePerS: number | undefined };
   }> {
     const start = Date.now();
-    const auditorStart: QueueReading = { depth: await queueDepth(AUDITOR_QUEUE_URL), atMs: Date.now() };
+    // D26.13: a janela da vazão do auditor só abre com a outbox vazia.
+    let auditorStart: QueueReading | undefined;
     const auditorAt = async () => {
       const end: QueueReading = { depth: await queueDepth(AUDITOR_QUEUE_URL), atMs: Date.now() };
-      return { depth: end.depth, ratePerS: auditorDrainRate(auditorStart, end) };
+      return { depth: end.depth, ratePerS: auditorStart === undefined ? undefined : auditorDrainRate(auditorStart, end) };
     };
     const deadline = start + LOAD_PLAN.quiesceTimeoutS * 1000;
     const readings: { atS: number; sample: QuietSample; reasons: NotQuietReason[] }[] = [];
@@ -380,6 +417,9 @@ class Runner {
         activeByProcess: await activeAppSessions(),
         completed: completedOperations(await this.probe(`quiesce-${name}-${i}`)),
       };
+      const window = auditorWindow(auditorStart, current.outboxPending);
+      if (window === "wait") auditorStart = undefined;
+      if (window === "start") auditorStart = { depth: await queueDepth(AUDITOR_QUEUE_URL), atMs: Date.now() };
       const reasons = notQuietReasons(previous, current);
       readings.push({ atS: (Date.now() - start) / 1000, sample: current, reasons });
       if (reasons.length === 0) {
@@ -426,7 +466,9 @@ function quantiles(buckets: ReturnType<typeof histogramDelta>) {
 interface StepRun {
   result: StepResult;
   prefix: string;
-  facts: { ops: number; resolved: number; gaveUp: number; unexpected: number; fresh: number };
+  facts: { ops: number; resolved: number; gaveUp: number; unexpected: number };
+  /** Só C (D26.6): respostas originais por key e duplicatas por camada. */
+  duplicates?: { originalsPerKey: number[]; caughtAt: { lock: number; uniqueIndex: number } };
 }
 
 function buildStep(
@@ -442,15 +484,19 @@ function buildStep(
     console.warn(`  aviso: algum processo reiniciou durante ${base.label} (contador voltou a zero)`);
   }
   const drainTimedOut = count(s, "outbox_drain_timeout") > 0;
+  const ops = count(s, "ops");
+  const concluded = count(s, "resolved") + count(s, "gave_up") + count(s, "unexpected");
   return {
     ...base,
-    ops: count(s, "ops"),
+    ops,
     processed: count(s, "processed"),
     rejected: count(s, "rejected"),
     replays: count(s, "replays"),
     transientAttempts: count(s, "transient_attempts"),
     gaveUp: count(s, "gave_up"),
     unexpected: count(s, "unexpected"),
+    // D26.5: em andamento quando o k6 encerrou o passo; as métricas delas foram descartadas.
+    interrupted: Math.max(0, ops - concluded),
     droppedIterations: count(s, "dropped_iterations"),
     throughput: throughputSeconds > 0 ? count(s, "resolved") / throughputSeconds : 0,
     latencyMs: percentiles(s, "req_duration"),
@@ -463,6 +509,8 @@ function buildStep(
       p95: s.metrics.outbox_lag?.["p(95)"],
       pendingMax: s.metrics.outbox_pending?.max,
       drainS: drainTimedOut ? undefined : s.metrics.outbox_drain_seconds?.max,
+      // D26.6: medição; o critério é a outbox vazia no fim da rodada.
+      drainTimedOut,
     },
   };
 }
@@ -499,6 +547,8 @@ async function httpStep(runner: Runner, def: HttpStepDef): Promise<StepRun> {
   }
   console.log(`  ${def.label}...`);
   const before = await runner.probe(`${def.name}-before`);
+  // C (D26.6): cada amostra no `--out json`, para contar as respostas originais key a key.
+  const pointsFile = `${def.name}.points.json`;
   await runner.k6(
     "submit.ts",
     def.name,
@@ -513,9 +563,22 @@ async function httpStep(runner: Runner, def: HttpStepDef): Promise<StepRun> {
       LOAD_SUMMARY: `/out/${def.name}.json`,
     },
     { LOAD_TOKEN: provider.token },
+    def.scenario === "C" ? ["--out", `json=/out/${pointsFile}`] : [],
   );
   const after = await runner.probe(`${def.name}-after`);
   const s = await runner.summary(def.name);
+  let duplicates: StepRun["duplicates"];
+  let fastPath = 0;
+  if (def.scenario === "C") {
+    const points = await readFile(join(runner.outDir, pointsFile), "utf8");
+    // D17.7: aumento por camada durante o C, somado entre as 3 api.
+    const layers = counterDelta(before, after, "wagering_duplicates_total", "layer").values;
+    fastPath = layers.fast_path ?? 0;
+    duplicates = {
+      originalsPerKey: perKey(countPointsByTag(points, "fresh", DUPLICATE_KEY_TAG), LOAD_PLAN.duplicates.keys),
+      caughtAt: { lock: layers.lock ?? 0, uniqueIndex: layers.unique_index ?? 0 },
+    };
+  }
   const elapsed = s.metrics.load_elapsed_seconds?.max ?? durationS;
   const result = buildStep(
     { scenario: def.scenario === "warmup" ? "A" : def.scenario, label: def.label, targetRate: def.step?.rate, durationS },
@@ -531,11 +594,16 @@ async function httpStep(runner: Runner, def: HttpStepDef): Promise<StepRun> {
     channel: "http",
     ...quantiles(histogramDelta(before, after, "wagering_processing_duration_seconds", { channel: "http" })),
   };
+  if (duplicates !== undefined) result.duplicates = { fastPath, ...duplicates.caughtAt };
   console.log(`    repouso antes: ${quiet.seconds.toFixed(1)} s (${holdsText(quiet.holds)}); ${auditorText(quiet.auditor)}`);
   console.log(
     `    ${result.ops} operações, ${result.throughput.toFixed(1)} op/s, p99 ${result.latencyMs?.p99.toFixed(1) ?? "—"} ms, ` +
-      `503: ${result.transientAttempts}, inesperados: ${result.unexpected}`,
+      `503: ${result.transientAttempts}, inesperados: ${result.unexpected}, interrompidas: ${result.interrupted}`,
   );
+  if (result.duplicates !== undefined) {
+    const d = result.duplicates;
+    console.log(`    duplicatas pegas: fast path ${d.fastPath}, lock ${d.lock}, unique_index ${d.uniqueIndex}`);
+  }
   return {
     result,
     prefix: def.prefix,
@@ -544,13 +612,20 @@ async function httpStep(runner: Runner, def: HttpStepDef): Promise<StepRun> {
       resolved: count(s, "resolved"),
       gaveUp: result.gaveUp,
       unexpected: result.unexpected,
-      fresh: count(s, "fresh"),
     },
+    ...(duplicates === undefined ? {} : { duplicates }),
   };
 }
 
-async function queueStep(runner: Runner, prefix: string, wallets: LoadWallet[], topo: Topology): Promise<StepRun> {
-  const name = "D";
+async function queueStep(
+  runner: Runner,
+  round: number,
+  prefix: string,
+  wallets: LoadWallet[],
+  topo: Topology,
+): Promise<StepRun> {
+  // A rodada no nome, como nos outros passos: senão cada rodada sobrescreve os arquivos da anterior.
+  const name = `r${round}-D`;
   const label = `D fila ${LOAD_PLAN.queue.messages}`;
   const quiet = await runner.quiesce(name);
   console.log(
@@ -584,7 +659,7 @@ async function queueStep(runner: Runner, prefix: string, wallets: LoadWallet[], 
   return {
     result,
     prefix,
-    facts: { ops: result.ops, resolved: 0, gaveUp: 0, unexpected: result.unexpected, fresh: 0 },
+    facts: { ops: result.ops, resolved: 0, gaveUp: 0, unexpected: result.unexpected },
   };
 }
 
@@ -675,7 +750,8 @@ async function runRound(
   const dlqBefore = await dlqDepth();
 
   console.log("  aquecimento (descartado)...");
-  await httpStep(runner, {
+  // Os números do aquecimento são descartados; a checagem de status inesperado e de transações, não (D26.6).
+  const warmup = await httpStep(runner, {
     scenario: "warmup",
     label: "aquecimento",
     prefix: `${prefix}-w`,
@@ -723,7 +799,7 @@ async function runRound(
         wallets: walletsC,
       })
     : undefined;
-  const queue = runs("D") ? await queueStep(runner, `${prefix}-d`, walletsD, topo) : undefined;
+  const queue = runs("D") ? await queueStep(runner, round, `${prefix}-d`, walletsD, topo) : undefined;
 
   console.log("  checagem de correção...");
   const outboxDrained = await waitOutboxEmpty();
@@ -749,15 +825,20 @@ async function runRound(
       unexpectedKinds: db.unexpectedKinds,
       unexpectedRejections: db.unexpectedRejections,
     },
-    steps: httpRuns.map((r) => ({ name: r.result.label, ...r.facts, dbTransactions: db.byPrefix[r.prefix] ?? 0 })),
+    steps: [warmup, ...httpRuns].map((r) => ({
+      name: r.result.label,
+      ...r.facts,
+      dbTransactions: db.byPrefix[r.prefix] ?? 0,
+    })),
     duplicates:
-      dup === undefined
+      dup?.duplicates === undefined
         ? undefined
         : {
             keys: plan.duplicates.keys,
             dbTransactions: db.byPrefix[dup.prefix] ?? 0,
-            fresh: dup.facts.fresh,
+            originalsPerKey: dup.duplicates.originalsPerKey,
             unexpected: dup.facts.unexpected,
+            caughtAt: dup.duplicates.caughtAt,
           },
     queue:
       queue === undefined
@@ -767,7 +848,8 @@ async function runRound(
             inbox: db.queueInbox,
             transactions: db.byPrefix[queuePrefix] ?? 0,
             dlqDelta,
-            drained: queue.result.queueDrainS !== undefined && queue.facts.unexpected === 0,
+            unexpected: queue.facts.unexpected,
+            drained: queue.result.queueDrainS !== undefined,
           },
     outboxDrained,
   };
@@ -789,8 +871,9 @@ async function environment(): Promise<Record<string, string>> {
   );
   const cpu = cpus();
   const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  const commit = (await runOk(["git", "rev-parse", "--short", "HEAD"])).trim();
-  const dirty = (await runOk(["git", "status", "--porcelain"])).trim() !== "";
+  // O commit medido e o estado da árvore (o `logs/` é ignorado pelo git, então a própria execução não suja).
+  const commit = (await runOk(["git", "rev-parse", "HEAD"])).trim();
+  const changed = (await runOk(["git", "status", "--porcelain"])).split("\n").filter((line) => line.trim() !== "");
   const k6 = (await runOk(["docker", "run", "--rm", K6_IMAGE, "version"])).trim().split("\n")[0] ?? "";
   return {
     "SO do host": `${version()} (${release()})`,
@@ -802,7 +885,9 @@ async function environment(): Promise<Record<string, string>> {
     k6: `${k6} (${K6_IMAGE})`,
     PostgreSQL: `${await sql("SHOW server_version;")} · max_connections ${await sql("SHOW max_connections;")}`,
     Topologia: "nginx → 3 api; 3 consumer; 2 outbox-publisher; 2 pending-worker; 1 event-auditor (D7.4), todos no mesmo host",
-    Commit: `${commit}${dirty ? " (com mudanças não commitadas)" : ""}`,
+    "Commit medido": commit,
+    "Árvore de trabalho":
+      changed.length === 0 ? "limpa (`git status --porcelain` vazio)" : `com ${changed.length} arquivo(s) não commitado(s)`,
   };
 }
 

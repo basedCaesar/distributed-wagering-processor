@@ -94,3 +94,27 @@ describe("S1: dinheiro sem number no domain/", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("S13: dinheiro sem number no load/lib/money.ts", () => {
+  const loadMoneyFixture = join("test", "fixtures", "lint", "load", "lib", "money.ts");
+
+  it("D2: load/lib/money.ts usando Number( ou Math.* falha no biome lint", async () => {
+    const { stdout, exitCode } = await runBiomeLint(loadMoneyFixture);
+
+    expect(exitCode).not.toBe(0);
+    expect(stdout).toContain("noRestrictedGlobals");
+    expect(stdout).toContain("Math");
+    expect(stdout).toContain("Number");
+  });
+
+  it("D2: load/lib/money.ts não usa Number(, parseFloat, parseInt, Math ou toFixed (inclusive por colchete ou globalThis)", async () => {
+    const path = join("load", "lib", "money.ts");
+    const source = await Bun.file(join(projectRoot, path)).text();
+    const offenders = source
+      .split("\n")
+      .flatMap((line, index) => (FORBIDDEN_MONEY_PATTERN.test(line) ? [`${path}:${index + 1}`] : []));
+
+    expect(source.length).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+});

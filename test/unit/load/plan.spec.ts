@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
+  duplicateScheduleS,
+  duplicateSendAtMs,
   hotWalletBalance,
   LOAD_PLAN,
   parseLoadArgs,
@@ -62,6 +64,16 @@ describe("D26.2: plano dos cenários", () => {
     // 10 req/s × 60 s = 600 BETs de 1.00 → 420.00.
     expect(hotWalletBalance({ rate: 10, durationS: 60 }, "1.00")).toBe("420.00");
     expect(hotWalletBalance({ rate: 25, durationS: 60 }, "1.00")).toBe("1050.00");
+  });
+
+  it("D26.2: no C, as cópias de cada key partem no mesmo instante absoluto, um intervalo fixo por key", () => {
+    const { leadS, slotS, keys } = LOAD_PLAN.duplicates;
+    const startAtMs = 1_000_000;
+    expect(duplicateSendAtMs(startAtMs, 0)).toBe(startAtMs);
+    expect(duplicateSendAtMs(startAtMs, 3)).toBe(startAtMs + 3 * slotS * 1000);
+    // O agendamento inteiro cabe no prazo do cenário, com folga para a última key.
+    expect(duplicateScheduleS()).toBe(leadS + keys * slotS);
+    expect(LOAD_PLAN.duplicates.maxDurationS).toBeGreaterThan(duplicateScheduleS());
   });
 
   it("D26.3: o token do passo precisa valer mais que o passo inteiro, com 60 s de folga", () => {

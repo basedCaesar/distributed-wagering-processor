@@ -26,7 +26,7 @@ export interface RoundFacts {
     /** `REJECTED` com código diferente de `INSUFFICIENT_FUNDS`. */
     unexpectedRejections: number;
   };
-  /** Um por passo HTTP de chaves únicas (A, B). */
+  /** Um por passo HTTP de chaves únicas (aquecimento, A, B). */
   steps: {
     name: string;
     /** Operações enviadas (keys distintas). */
@@ -40,10 +40,34 @@ export interface RoundFacts {
     dbTransactions: number;
   }[];
   /** C: duplicatas da mesma key; ausente se o C não rodou (D26.12). */
-  duplicates: { keys: number; dbTransactions: number; fresh: number; unexpected: number } | undefined;
+  duplicates:
+    | {
+        keys: number;
+        dbTransactions: number;
+        /** Respostas com `idempotentReplay: false`, na posição da key (0..keys-1). Key sem posição = 0. */
+        originalsPerKey: number[];
+        unexpected: number;
+        /** Aumento de `wagering_duplicates_total` durante o C, por camada (D17.7). */
+        caughtAt: { lock: number; uniqueIndex: number };
+      }
+    | undefined;
   /** D: mensagens pela fila; ausente se o D não rodou (D26.12). */
-  queue: { messages: number; inbox: number; transactions: number; dlqDelta: number; drained: boolean } | undefined;
-  /** A outbox esvaziou dentro do teto depois da carga. */
+  queue:
+    | {
+        messages: number;
+        inbox: number;
+        transactions: number;
+        dlqDelta: number;
+        /** Mensagens que o `SendMessageBatch` não aceitou (status ou `Failed`). */
+        unexpected: number;
+        /** A fila ficou vazia dentro do teto. */
+        drained: boolean;
+      }
+    | undefined;
+  /**
+   * A outbox esvaziou dentro do teto **no fim da rodada** (D26.6). A espera
+   * depois de cada passo é medição: vai para o relatório e não reprova.
+   */
   outboxDrained: boolean;
 }
 
@@ -98,13 +122,25 @@ export function evaluateRound(facts: RoundFacts): Verdict {
   if (dup !== undefined) {
     if (dup.unexpected > 0) fail(`duplicatas: ${dup.unexpected} respostas com status inesperado`);
     if (dup.dbTransactions !== dup.keys) fail(`duplicatas: ${dup.dbTransactions} transações no banco para ${dup.keys} keys`);
-    if (dup.fresh > dup.keys) {
-      fail(`duplicatas: ${dup.fresh} respostas originais (idempotentReplay: false) para ${dup.keys} keys`);
+    const originals = (key: number) => dup.originalsPerKey[key] ?? 0;
+    const keys = Array.from({ length: dup.keys }, (_, key) => key);
+    const none = keys.filter((key) => originals(key) === 0);
+    const many = keys.filter((key) => originals(key) > 1);
+    if (none.length > 0) {
+      fail(`duplicatas: ${none.length} keys sem nenhuma resposta original (idempotentReplay: false): ${none.join(", ")}`);
+    }
+    if (many.length > 0) {
+      const detail = many.map((key) => `${key} (${originals(key)})`).join(", ");
+      fail(`duplicatas: ${many.length} keys com mais de uma resposta original (idempotentReplay: false): ${detail}`);
+    }
+    if (dup.caughtAt.lock === 0) {
+      fail("duplicatas: nenhuma pega no lock (wagering_duplicates_total{layer=\"lock\"}): as cópias não disputaram de verdade");
     }
   }
 
   const queue = facts.queue;
   if (queue !== undefined) {
+    if (queue.unexpected > 0) fail(`fila: ${queue.unexpected} mensagens com status inesperado no envio`);
     if (queue.inbox !== queue.messages) fail(`fila: ${queue.inbox} linhas na inbox para ${queue.messages} mensagens`);
     if (queue.transactions !== queue.messages) {
       fail(`fila: ${queue.transactions} transações no banco para ${queue.messages} mensagens`);

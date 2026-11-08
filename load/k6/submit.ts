@@ -3,7 +3,7 @@ import exec from "k6/execution";
 import http from "k6/http";
 import { Counter, Trend } from "k6/metrics";
 import { classifySubmission, retryAfterSeconds } from "../lib/classify.ts";
-import { LOAD_PLAN } from "../lib/plan.ts";
+import { DUPLICATE_KEY_TAG, duplicateScheduleS, duplicateSendAtMs, LOAD_PLAN } from "../lib/plan.ts";
 import {
   env,
   loadWallets,
@@ -22,8 +22,11 @@ import {
  *
  * - `warmup`, `A`, `B`: chegadas por segundo constantes (modelo aberto), uma
  *   key nova por chegada;
- * - `C`: cada VU manda as mesmas keys na mesma ordem, então a k-ésima
- *   iteração dos `copies` VUs é a mesma key quase ao mesmo tempo.
+ * - `C`: cada VU manda as mesmas keys na mesma ordem, e a k-ésima iteração
+ *   de todo VU espera o mesmo instante absoluto (calculado no setup) antes de
+ *   enviar: as `copies` cópias da key partem juntas. As respostas originais
+ *   levam a tag da key, e o orquestrador as conta key a key pelo `--out json`
+ *   (D26.6).
  *
  * `503` é reenviado com a mesma key (D26.5). Depois da carga, o teardown
  * espera a outbox esvaziar (D26.4).
@@ -74,7 +77,8 @@ function mainScenario() {
 export const options = {
   scenarios: {
     main: { ...mainScenario(), exec: "submit" },
-    sampler: samplerScenario(SCENARIO === "C" ? LOAD_PLAN.duplicates.maxDurationS : DURATION_S),
+    // No C, a amostragem cobre o agendamento das keys com a folga de um slot.
+    sampler: samplerScenario(SCENARIO === "C" ? duplicateScheduleS() + LOAD_PLAN.duplicates.slotS : DURATION_S),
   },
   summaryTrendStats: SUMMARY_TREND_STATS,
   // A espera da outbox tem teto próprio (D26.4); o padrão do k6 (60 s) cortaria antes.
@@ -107,21 +111,37 @@ function operationFor(iteration: number): Operation {
   return { key: iteration, ...wallet, kind: isBet ? "BET" : "WIN", amount: isBet ? betAmount : winAmount };
 }
 
+/** Corpo que não é JSON (o `500` sem corpo do nginx, por exemplo) vira `undefined` e cai em inesperado. */
 function parseBody(body: unknown): unknown {
   if (typeof body !== "string" || body === "") return undefined;
   try {
     return JSON.parse(body);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
   }
 }
 
-export function setup(): { start: number } {
-  return { start: Date.now() };
+interface SetupData {
+  start: number;
+  /** C: instante absoluto da key 0 (D26.2). */
+  duplicatesStartAtMs: number;
 }
 
-export function submit(): void {
+export function setup(): SetupData {
+  const start = Date.now();
+  return { start, duplicatesStartAtMs: start + LOAD_PLAN.duplicates.leadS * 1000 };
+}
+
+/** C: espera o instante da key, igual para as `copies` cópias. Atrasado (key anterior lenta), envia já. */
+function waitDuplicateSlot(data: SetupData, key: number): void {
+  const waitMs = duplicateSendAtMs(data.duplicatesStartAtMs, key) - Date.now();
+  if (waitMs > 0) sleep(waitMs / 1000);
+}
+
+export function submit(data: SetupData): void {
   const op = operationFor(exec.scenario.iterationInTest);
+  if (SCENARIO === "C") waitDuplicateSlot(data, op.key);
   const externalTransactionId = `${PREFIX}-${op.key}`;
   const body = JSON.stringify({
     providerId: "provider-a",
@@ -168,7 +188,10 @@ export function submit(): void {
     }
     resolved.add(1);
     (result.outcome === "processed" ? processed : rejected).add(1);
-    (result.replay ? replays : fresh).add(1);
+    if (result.replay) replays.add(1);
+    // A tag da key só no C: nos outros, criaria uma série por chegada no k6.
+    else if (SCENARIO === "C") fresh.add(1, { [DUPLICATE_KEY_TAG]: String(op.key) });
+    else fresh.add(1);
     break;
   }
   opDuration.add(Date.now() - start);
@@ -178,7 +201,7 @@ export function sample(): void {
   sampleOutbox();
 }
 
-export function teardown(data: { start: number }): void {
+export function teardown(data: SetupData): void {
   loadElapsed.add((Date.now() - data.start) / 1000);
   waitOutboxDrain();
 }

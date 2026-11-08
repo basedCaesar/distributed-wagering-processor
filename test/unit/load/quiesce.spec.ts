@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { auditorDrainRate, completedOperations, isQuiet, notQuietReasons, summarizeHolds } from "../../../load/lib/quiesce";
+import {
+  auditorDrainRate,
+  auditorWindow,
+  completedOperations,
+  isQuiet,
+  notQuietReasons,
+  summarizeHolds,
+} from "../../../load/lib/quiesce";
 import { parsePrometheus } from "../../../load/lib/prometheus";
 
 /**
@@ -73,6 +80,14 @@ describe("D26.11: repouso entre passos", () => {
     expect(auditorDrainRate({ depth: 0, atMs: 0 }, { depth: 0, atMs: 20_000 })).toBeUndefined();
     // Intervalo curto demais: a leitura não vale.
     expect(auditorDrainRate({ depth: 100, atMs: 0 }, { depth: 90, atMs: 500 })).toBeUndefined();
+  });
+
+  it("D26.13: a janela da vazão do auditor só começa com a outbox vazia, e recomeça se ela voltar a ter pendentes", () => {
+    const reading = { depth: 500, atMs: 0 };
+    expect(auditorWindow(undefined, 5)).toBe("wait");
+    expect(auditorWindow(undefined, 0)).toBe("start");
+    expect(auditorWindow(reading, 0)).toBe("keep");
+    expect(auditorWindow(reading, 3)).toBe("wait");
   });
 
   it("D26.11: resumo do passo: quantas leituras cada motivo segurou", () => {

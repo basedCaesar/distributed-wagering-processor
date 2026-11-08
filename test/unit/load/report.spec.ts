@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { LOAD_PLAN } from "../../../load/lib/plan";
 import { formatSeconds, type LoadResult, renderReport, type StepResult } from "../../../load/lib/report";
 
 /**
@@ -20,6 +21,7 @@ function step(overrides: Partial<StepResult> = {}): StepResult {
     transientAttempts: 12,
     gaveUp: 10,
     unexpected: 0,
+    interrupted: 0,
     droppedIterations: 0,
     throughput: 49.8,
     latencyMs: { p50: 12.3, p95: 40.1, p99: 88.8, max: 210 },
@@ -132,6 +134,45 @@ describe("D26.7: relatório gerado", () => {
     expect(md).toContain("Processamento");
     expect(md).toContain("12.0 ms");
     expect(md).toContain("> 10000 ms");
+  });
+
+  it("D26.5: operações interrompidas pelo k6 no fim do passo (sem desfecho) aparecem à parte", () => {
+    const md = renderReport({
+      ...result(true),
+      rounds: [{ round: 1, steps: [step({ interrupted: 156 })], verdict: { ok: true, failures: [] } }],
+    });
+    expect(md).toContain("Interrompidas (k6)");
+    expect(md).toContain("| 156 |");
+  });
+
+  it("D26.6: outbox que não esvaziou no teto do passo aparece como medição, sem reprovar", () => {
+    const md = renderReport({
+      ...result(true),
+      rounds: [
+        {
+          round: 1,
+          steps: [step({ outboxLag: { max: 170, p95: 150, pendingMax: 4000, drainS: undefined, drainTimedOut: true } })],
+          verdict: { ok: true, failures: [] },
+        },
+      ],
+    });
+    expect(md).toContain(`> ${LOAD_PLAN.drainTimeoutS} s`);
+    expect(md).toContain("PASSOU");
+  });
+
+  it("D26.6 D17.7: no C, as duplicatas por camada (fast_path, lock, unique_index) aparecem no relatório", () => {
+    const md = renderReport({
+      ...result(true),
+      rounds: [
+        {
+          round: 1,
+          steps: [step({ scenario: "C", label: "C 50×20", duplicates: { fastPath: 120, lock: 830, uniqueIndex: 0 } })],
+          verdict: { ok: true, failures: [] },
+        },
+      ],
+    });
+    expect(md).toContain("Duplicatas (C)");
+    expect(md).toContain("| C 50×20 | 120 | 830 | 0 |");
   });
 
   it("D26.12: os cenários que rodaram aparecem no topo", () => {

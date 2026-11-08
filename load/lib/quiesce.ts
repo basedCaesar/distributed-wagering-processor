@@ -67,9 +67,22 @@ export interface QueueReading {
 const MIN_RATE_INTERVAL_MS = 5000;
 
 /**
+ * D26.13: a janela da vazão do auditor só abre com a outbox vazia (antes
+ * disso, o publisher ainda enche a fila dele e a queda subestima o consumo).
+ * - `wait`: outbox com pendentes; sem janela (se havia uma, recomeça);
+ * - `start`: outbox vazia e sem janela: ler a fila agora e abrir;
+ * - `keep`: janela aberta e outbox vazia.
+ */
+export function auditorWindow(start: QueueReading | undefined, outboxPending: number): "wait" | "start" | "keep" {
+  if (outboxPending > 0) return "wait";
+  return start === undefined ? "start" : "keep";
+}
+
+/**
  * D26.13: mensagens que o auditor consumiu por segundo entre duas leituras da
- * fila dele. Com a outbox vazia (repouso), nada entra na fila, então a queda é
- * o consumo. `undefined`: fila vazia ou intervalo curto demais.
+ * fila dele, as duas com a outbox vazia (`auditorWindow`): nada entra na
+ * fila, então a queda é o consumo. `undefined`: fila vazia ou intervalo curto
+ * demais.
  */
 export function auditorDrainRate(before: QueueReading, after: QueueReading): number | undefined {
   const elapsedMs = after.atMs - before.atMs;
