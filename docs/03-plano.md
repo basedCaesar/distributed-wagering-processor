@@ -332,6 +332,26 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S13 — Teste de carga (`bun run test:load`)
+
+**Entrega:**
+- `scripts/load-test.ts` (orquestrador), `load/k6/` (scripts do k6, `tsconfig` próprio) e `load/lib/` (código puro: Prometheus, classificação, plano, veredito, relatório);
+- k6 pela imagem Docker na rede do Compose de dev; cenários A (throughput em degraus), B (hot wallet), C (duplicatas) e D (fila), 3 rodadas por padrão e `--rounds N`;
+- `/metrics` interno lido antes e depois de cada passo; outbox lag amostrado a cada 1 s;
+- checagem de correção por rodada; só ela e o status inesperado reprovam;
+- repouso antes de cada passo, com o motivo da espera e a fila do auditor registrados (D26.11, D26.13); `--scenarios` para investigar (D26.12);
+- `worker_connections 4096` no nginx, o teto que a carga encontrou (D26.10);
+- `docs/load-test.md` com os números reais das 3 rodadas e a análise; `load/README.md`; seção no README; limitação do `ARCHITECTURE.md` atualizada.
+
+**Cobre:** R-14-O1 · D11.6 · D26
+
+**Aceite:**
+- testes de unidade de `load/lib/` escritos antes e vistos falhando;
+- `bun run test:load` com 3 rodadas no Compose de dev, correção verde em todas;
+- `bun run check` verde; `test:repeat concurrency 10` verde (o `typecheck` e o lint mudaram).
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":
@@ -341,7 +361,7 @@ Na ordem de `02-decisoes.md`, seção "Encaixes":
 4. Secrets Manager;
 5. S3;
 6. observabilidade completa;
-7. k6;
+7. k6 (feito na S13, D26, antes dos itens 1 a 6: é o diferencial que o §14 cita pelo nome);
 8. frontend;
 9. Kubernetes;
 10. CI (feito na S12, D25).

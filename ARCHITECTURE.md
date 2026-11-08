@@ -192,7 +192,7 @@ Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 1
 - **Publicação dupla possível:** com um lease vencido no meio da publicação, um evento pode sair duas vezes; o consumidor deduplica pelo `eventId` (D20.5).
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
-- **Sem teste de carga ainda:** o k6 (`bun run test:load`) é um extra (D11.6).
+- **Capacidade medida só numa máquina de desenvolvimento:** o teste de carga (`bun run test:load`, D26) roda o k6 e os 11 processos na mesma VM do Docker Desktop, contra o LocalStack. Os números valem para comparar degraus e cenários, não como capacidade de produção. A hot wallet é serializada pelo lock pessimista da wallet (D7.2), por desenho. Números e análise em [`docs/load-test.md`](docs/load-test.md).
 
 ## Onde está cada parte
 

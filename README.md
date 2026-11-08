@@ -53,6 +53,7 @@ bun run test:e2e          # e2e com o Keycloak real (D10.3, D23.5)
 bun run test:repeat concurrency 10   # n rodadas seguidas; resumo sempre e log de cada falha em logs/test-repeat/
 bun run test:proofs       # remove cada proteção e exige que o teste dela falhe (proofs/README.md)
 bun run acceptance        # exemplos do §9 e do §10, literalmente, contra o Compose de dev
+bun run test:load         # teste de carga (k6) contra o Compose de dev, 3 rodadas; --rounds N para iterar (D26)
 ```
 
 `bun run check` e `bun run test:proofs` precisam da infraestrutura de teste no ar (`bun run infra:test:up`); alguns testes também usam o Docker direto (um Postgres próprio, D21.7, e o `docker compose config`). No Compose de dev, o serviço `migrate` aplica as migrations antes dos processos subirem.
@@ -65,6 +66,18 @@ Copy-Item .env.example .env       # Windows (PowerShell)
 ```
 
 `bun run infra:up` e `bun run check` **não** precisam do `.env`: o Compose define as variáveis de cada serviço e os testes usam o `.env.test`.
+
+## Teste de carga
+
+`bun run test:load` (D26) roda o k6 num container na rede do Compose de dev, contra o nginx e as 3 `api` e pela fila. São 4 cenários: throughput em degraus, hot wallet, duplicatas da mesma key e mensagens do §10. O `/metrics` interno de cada processo é lido antes e depois de cada passo, sem porta exposta. No fim de cada rodada vem a checagem de correção: reconciliação de todas as wallets criadas e consultas no banco. **Só a correção ou um status inesperado reprovam**; latência nunca reprova, porque o §14 não tem meta de RPS.
+
+```bash
+bun run infra:test:down   # o test:load aborta com o Compose de teste no ar
+bun run infra:up
+bun run test:load         # 3 rodadas, cerca de 1h30; relatório em logs/load/<execução>/report.md
+```
+
+Números, ambiente e análise: [`docs/load-test.md`](docs/load-test.md). Como funciona: [`load/README.md`](load/README.md). Fica fora do `check` e do CI.
 
 ## CI
 
@@ -317,6 +330,7 @@ O `.sh` tem que ter fim de linha LF (`.gitattributes`), senão quebra dentro do 
 | Erros → HTTP (`classifyError`) | [`src/shared/errors/README.md`](src/shared/errors/README.md) |
 | HTTP comum (correlação, validação, Swagger) | [`src/shared/http/README.md`](src/shared/http/README.md) |
 | Métricas | [`src/shared/metrics/README.md`](src/shared/metrics/README.md) |
+| Teste de carga (k6) | [`load/README.md`](load/README.md) |
 | Configuração | [`src/shared/config/README.md`](src/shared/config/README.md) |
 | Segredos | [`src/shared/secrets/README.md`](src/shared/secrets/README.md) |
 | Logs | [`src/shared/logger/README.md`](src/shared/logger/README.md) |

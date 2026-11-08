@@ -3,8 +3,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "biome lint ./src ./test/support ./test/unit ./test/integration ./test/concurrency ./test/e2e ./scripts ./migrations ./proofs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p load/k6/tsconfig.json",
+    "lint": "biome lint ./src ./test/support ./test/unit ./test/integration ./test/concurrency ./test/e2e ./scripts ./migrations ./proofs ./load",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test --env-file=.env.test --preload ./test/support/integration-setup.ts test/integration",
     "test:concurrency": "bun test --env-file=.env.test --preload ./test/support/integration-setup.ts test/concurrency",
@@ -20,13 +20,15 @@
     "infra:down": "docker compose down",
     "infra:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "infra:test:down": "docker compose -f docker-compose.test.yml down -v",
-    "acceptance": "bun run scripts/acceptance.ts"
+    "acceptance": "bun run scripts/acceptance.ts",
+    "test:load": "bun run scripts/load-test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.4",
     "@nestjs/testing": "^12.3.2",
     "@types/bun": "1.4.4",
     "@types/express": "^5.0.6",
+    "@types/k6": "2.3.0",
     "@types/pg": "^8.23.1",
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2"

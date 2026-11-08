@@ -25,5 +25,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["node_modules", "dist", "test/fixtures/lint"]
+  "exclude": ["node_modules", "dist", "test/fixtures/lint", "load/k6"]
 }
