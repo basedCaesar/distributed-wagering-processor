@@ -107,6 +107,7 @@ Este projeto foi construído com um agente de IA como par de programação. Os r
 | S15 | O teste de concorrência rodava duas rodadas do publisher em paralelo sobre o **mesmo** publisher. Elas disputavam o lease, e o publisher solta um evento por wallet por rodada (D9.2): as 200 rodadas acabaram antes dos ~100 eventos da wallet | A 1ª rodada do teste | Uma rodada só, com limite de 4 × (BETs + 2). Nenhuma asserção mudou |
 | S15 | O teste do `kill -9` esperava o evento publicado com a instância morta ficar visível na fila. O receive que o `kill -9` deixou aberto no LocalStack (o efeito da D19.9, que a própria fatia documentou) pegou o evento e o segurou pela visibilidade de 30 s | A 1ª rodada do teste ("evento parado na fila: não aconteceu em 20000 ms") | Long poll de 1 s no processo do teste e espera por estado observável até a mensagem voltar a ficar visível (até 40 s). As asserções não mudaram |
 | S15 | Na demo ao vivo, fez uma BET de 25.00 na wallet do exemplo no Compose de dev. A aceitação exige saldo 975.00 depois da BET dela e falharia | O próprio agente, ao ler o `acceptance.ts` antes de rodá-lo | Um `ROLLBACK` da BET da demo pela própria API devolveu o saldo a 1000.00, sem apagar volume nenhum; a aceitação não confere versão nem lançamentos da wallet. Depois, `acceptance` duas vezes ok e `accounting:reconcile` consistente |
+| S15 | Na `ConnectionSession`, o prazo do `auth` (5 s) só era cancelado **depois** de o token ser validado, e não quando o frame chegava. Como o timeout do JWKS também é de 5 s, um cliente que mandava o `auth` em 1 s com o JWKS pendurado era fechado com `4408` ("sem `auth` em 5 s"), quando a D28.2 pede `4503` (JWKS indisponível, reconectar resolve). O teste do `4503` usava um JWKS que responde `503` na hora e não pegava isso | A revisão da S15 em contexto limpo (`/revisar`) | Teste novo, visto falhando antes da correção (`Expected: 4503, Received: 4408`): o JWKS real do emissor de teste atrás do `holding-proxy` segurando o pedido, com o prazo do `auth` de 1 s e o do JWKS de 3 s. Correção: o `authTimer` para quando chega um frame de `auth` válido no formato; a validação fica com o prazo do JWKS. Esclarecido na D28.2 e no README do módulo |
 | | | | |
 
 ## Fechamento da S11 (correção da revisão)
@@ -183,6 +184,17 @@ WebSocket de tempo real (D28), em 08/11/2026.
 - **Núcleo intacto:** nenhum arquivo de `src/modules/wagering/` nem migration no diff; os únicos testes existentes alterados são o `compose-topology.spec.ts` e a contagem de `SIGTERM` do `ci.yml` (D28.12, aprovados).
 - **Ainda não rodado:** o `ci.yml` com o step do `realtime:watch` e os 7 `SIGTERM` (depende do push).
 
+## Fechamento da S15 (correção da revisão)
+
+- **Achado 1 (prazo do `auth`):** teste com o JWKS atrás do `holding-proxy`, visto falhando antes (`4408` no lugar de `4503`); depois da correção, verde. Registrado na tabela acima e na D28.2.
+- **Testes das regras da D28.2 sem cobertura, cada um visto falhando sem a proteção:** cliente lento → `1013` (sem a checagem do `bufferedAmount`: `Received: undefined`); sem `pong` → `terminate` (sem a checagem do `alive`: "terminate da conexão sem pong: não aconteceu"); frame binário antes do `auth` → `4400` (tratando o binário como texto, o `auth` válido dentro dele autentica e o fechamento só vem no fim, `1001`); erro inesperado → `1011` (sem o `close` no `catch`: "fechamento: não aconteceu", no teste do código e no dos logs).
+- **Laço sequencial:** teste de unidade com o delete controlado pelo teste. Com `Promise.all`, ele falha na asserção da ordem (a 2ª já entregue com o delete da 1ª em andamento). A espera de sincronização foi trocada de `=== 1` para `>= 1` antes de rodar o teste com o código certo, para a falha cair na asserção e não no passo de espera. O teste de concorrência foi renomeado para o que prova (o FIFO por wallet e o publisher) e passou a conferir os números exatos.
+- **`outcome="shutdown"`** separado do `stale` (D28.5, D28.11, `METRIC_LABEL_VALUES`); `onDeliveryFailure` obrigatório no hub, com o log extraído para `infra/delivery-failure.ts`; três comentários que contradiziam a D28.5 corrigidos.
+- **Logs:** os fechamentos `4401` (recusado e vencido) entram no teste com processos reais; o `1011` e a falha de entrega, que não têm como ser provocados num processo real, ficam num teste de unidade com um pino de verdade capturando as linhas.
+- **`bun run check`:** verde. Unidade 706, integração 481 (7 `skip`, os `SIGTERM` no Windows), concorrência 33, e2e 6, `proofs:check` ok.
+- **`bun run test:repeat concurrency 10`:** 10/10 verdes, 861,3 s (`logs/test-repeat/2026-11-08T23-32-16-concurrency/`).
+- **Em aberto:** a D28.2 diz só que a conexão sem `pong` "é encerrada", sem código. A implementação faz `terminate` (sem frame de fechamento; o cliente vê `1006`), e é isso que o teste e o README do módulo descrevem. Fica para decidir se a D28.2 registra isso.
+
 ## Provas de que os testes protegem
 
 Resultado de `bun run test:proofs` (S11, 03/11/2026, com a 01 e a 07 regeneradas): **14/14**. Na S8 (01/11/2026) também deu 14/14; entre a S9 e a S11, a 01 e a 07 não aplicavam (tabela acima), e desde a S11 o `proofs:check` do `check` pega isso. Cada teste passa sem o patch e falha com ele, pelo motivo da última coluna. Patches em `proofs/`, manifesto em `proofs/manifest.ts`, mecanismo na D21.8.
@@ -213,6 +225,4 @@ Resultado de `bun run test:proofs` (S11, 03/11/2026, com a 01 e a 07 regeneradas
 
 **Prazo do R-13-C1 (D21.10).** O teste do R-13-C1 (50 BETs iguais em paralelo) ganhou `SLOW_TEST_MS` de 30 s na S8: muda só o prazo do teste no bun (padrão de 5 s), nenhuma asserção. As 50 requisições serializadas no lock levam de 1,5 s a 3,9 s conforme a carga. Aprovado por mim na S8; registrado na correção da revisão.
 
-## O que eu fiz sem a IA
 
-Preencher: decisões, leituras e depuração que fizeram diferença.

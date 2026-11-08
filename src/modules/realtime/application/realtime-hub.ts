@@ -20,8 +20,8 @@ export class RealtimeHub {
   constructor(
     private readonly options: {
       maxFollowsPerConnection: number;
-      /** Uma entrega que falhou (a infra classifica e loga, D11.1). */
-      onDeliveryFailure?: (error: unknown) => void;
+      /** Uma entrega que falhou (a infra classifica e loga, D11.1). Obrigatório: o hub não engole erro. */
+      onDeliveryFailure: (error: unknown) => void;
     },
   ) {}
 
@@ -65,7 +65,7 @@ export class RealtimeHub {
         delivered++;
       } catch (error) {
         // Socket fechando: a entrega é notificação (D28.8) e o fechamento tira a conexão do hub.
-        this.options.onDeliveryFailure?.(error);
+        this.options.onDeliveryFailure(error);
       }
     }
     return delivered;

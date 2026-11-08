@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { startTestApi, type TestApi } from "../../support/api";
 import { startTestIssuer } from "../../support/auth";
 import { expectLedgerMatchesBalances } from "../../support/db-ledger-invariant";
+import { startHoldingProxy } from "../../support/holding-proxy";
 import {
   createTestTopic,
   parkAllOutbox,
@@ -136,6 +137,15 @@ describe("D28 V-01 V-03: WebSocket de tempo real", () => {
     expect((await client.closed).code).toBe(4400);
   }, SLOW_TEST_MS);
 
+  it("D28.2: frame binário antes do auth → fecha com 4400, mesmo com um auth válido dentro", async () => {
+    const client = await openClient(realtime.url);
+    const frame = JSON.stringify({ type: "auth", token: await api.issuer.operatorToken() });
+    client.sendBinary(new TextEncoder().encode(frame));
+
+    expect((await client.closed).code).toBe(4400);
+    expect(client.messages.filter((message) => message.type === "authenticated")).toEqual([]);
+  }, SLOW_TEST_MS);
+
   it("D28.2: frame acima de 4 KB → fecha com 1009", async () => {
     const client = await openClient(realtime.url);
     client.sendRaw(JSON.stringify({ type: "auth", token: "x".repeat(5000) }));
@@ -249,6 +259,25 @@ describe("D28 V-01 V-03: WebSocket de tempo real", () => {
       await instance.close();
       await deleteInstanceQueue(instance.instanceId);
       await down.stop();
+    }
+  }, SLOW_TEST_MS);
+
+  it("D28.2 D16.16: o prazo do auth vale até o frame chegar; JWKS pendurado além dele → 4503, não 4408", async () => {
+    // O JWKS real do emissor de teste, atrás do proxy que segura o pedido sem responder.
+    const proxy = await startHoldingProxy(new URL(api.issuer.config.jwksUrl).origin);
+    const auth = { ...api.issuer.config, jwksUrl: `${proxy.url}/jwks`, jwksTimeoutMs: 3 * AUTH_TIMEOUT_MS };
+    const instance = await startTestRealtime({ topicArn: topic.topicArn, auth, overrides: { authTimeoutMs: AUTH_TIMEOUT_MS } });
+    try {
+      proxy.hold();
+      const client = await openClient(instance.url);
+      client.send({ type: "auth", token: await api.issuer.operatorToken() });
+
+      // O auth chegou dentro do prazo; quem decide é o timeout do JWKS (3 × o prazo do auth).
+      expect((await client.closed).code).toBe(4503);
+    } finally {
+      await instance.close();
+      await deleteInstanceQueue(instance.instanceId);
+      await proxy.close();
     }
   }, SLOW_TEST_MS);
 });

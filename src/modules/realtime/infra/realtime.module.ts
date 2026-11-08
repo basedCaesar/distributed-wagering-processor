@@ -4,11 +4,11 @@ import type { Logger } from "pino";
 import { JoseProviderIdentity } from "../../../shared/auth/jose-provider-identity";
 import { PROVIDER_IDENTITY } from "../../../shared/auth/provider-identity.port";
 import { createSqsClient } from "../../../shared/aws/sqs-client";
-import { classifyError } from "../../../shared/errors/classify-error";
 import { LOGGER } from "../../../shared/logger/logger.module";
 import { metricsRegistry } from "../../../shared/metrics/metrics";
 import { MetricsServer } from "../../../shared/metrics/metrics-server";
 import { RealtimeHub } from "../application/realtime-hub";
+import { logDeliveryFailure } from "./delivery-failure";
 import { resolveInstanceQueueUrl } from "./messaging/instance-queue";
 import { RealtimeEventLoop } from "./messaging/realtime-event-loop";
 import { instanceQueueName, loadRealtimeConfig, REALTIME_CONFIG, type RealtimeConfig } from "./realtime-config";
@@ -65,13 +65,7 @@ class RealtimeLifecycle implements OnApplicationBootstrap, OnModuleDestroy {
     {
       provide: RealtimeHub,
       useFactory: (config: RealtimeConfig, logger: Logger) =>
-        new RealtimeHub({
-          maxFollowsPerConnection: config.maxFollowsPerConnection,
-          onDeliveryFailure: (error) => {
-            const { category, code } = classifyError(error);
-            logger.warn({ category, code }, "entrega a um socket do realtime falhou");
-          },
-        }),
+        new RealtimeHub({ maxFollowsPerConnection: config.maxFollowsPerConnection, onDeliveryFailure: logDeliveryFailure(logger) }),
       inject: [REALTIME_CONFIG, LOGGER],
     },
     { provide: SQS, useFactory: (config: RealtimeConfig) => createSqsClient(config.aws), inject: [REALTIME_CONFIG] },

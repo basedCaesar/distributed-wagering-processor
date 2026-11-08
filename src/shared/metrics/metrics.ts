@@ -57,7 +57,7 @@ export const METRIC_LABEL_VALUES = {
   outbox_pending_events: {},
   outbox_lag_seconds: {},
   realtime_connections: {},
-  realtime_events_total: { outcome: ["forwarded", "ignored", "invalid", "stale"] },
+  realtime_events_total: { outcome: ["forwarded", "ignored", "invalid", "stale", "shutdown"] },
 } as const satisfies Record<string, Record<string, readonly string[]>>;
 
 type Labels = typeof METRIC_LABEL_VALUES;
@@ -118,12 +118,12 @@ export type RealtimeEventOutcome = Labels["realtime_events_total"]["outcome"][nu
 
 /**
  * Mensagens da fila da instância do `realtime`, pelo desfecho (D28.6,
- * D28.7, D28.11): enviada aos sockets, `eventType` ignorado, inválida ou
- * descartada por idade.
+ * D28.7, D28.11): enviada aos sockets, `eventType` ignorado, inválida,
+ * descartada por idade ou recebida durante o stop.
  */
 export const realtimeEventsTotal = new Counter({
   name: "realtime_events_total",
-  help: "Mensagens da fila do realtime por desfecho (forwarded, ignored, invalid, stale)",
+  help: "Mensagens da fila do realtime por desfecho (forwarded, ignored, invalid, stale, shutdown)",
   labelNames: ["outcome"],
   registers: [metricsRegistry],
 });

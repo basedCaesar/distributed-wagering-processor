@@ -22,12 +22,22 @@ function event(walletId: string, audience: RealtimeEvent["audience"] = { kind: "
   };
 }
 
+/** Hub em que uma falha de entrega inesperada derruba o teste (não é engolida). */
+function newHub(maxFollowsPerConnection = 50): RealtimeHub {
+  return new RealtimeHub({
+    maxFollowsPerConnection,
+    onDeliveryFailure: (error) => {
+      throw error;
+    },
+  });
+}
+
 const operator: Viewer = { roles: new Set(["operator"]) };
 const providerB: Viewer = { roles: new Set(["provider"]), providerId: "provider-b" };
 
 describe("D28.2 D28.3: hub de conexões e wallets seguidas", () => {
   it("D28.2: entrega só a quem segue a wallet do evento", () => {
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 50 });
+    const hub = newHub();
     const a = connection(operator);
     const b = connection(operator);
     hub.follow(a, W1);
@@ -40,7 +50,7 @@ describe("D28.2 D28.3: hub de conexões e wallets seguidas", () => {
   });
 
   it("D28.3: entrega só a quem pode ver (provedor de outro provedor não recebe a transação)", () => {
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 50 });
+    const hub = newHub();
     const op = connection(operator);
     const other = connection(providerB);
     hub.follow(op, W1);
@@ -52,7 +62,7 @@ describe("D28.2 D28.3: hub de conexões e wallets seguidas", () => {
   });
 
   it("D28.2: seguir de novo não duplica; unfollow e remove param a entrega", () => {
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 50 });
+    const hub = newHub();
     const a = connection(operator);
     expect(hub.follow(a, W1)).toBe("followed");
     expect(hub.follow(a, W1)).toBe("followed");
@@ -70,19 +80,21 @@ describe("D28.2 D28.3: hub de conexões e wallets seguidas", () => {
   });
 
   it("D28.2: limite de wallets por conexão → FOLLOW_LIMIT, sem seguir", () => {
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 1 });
+    const hub = newHub(1);
     const a = connection(operator);
     expect(hub.follow(a, W1)).toBe("followed");
     expect(hub.follow(a, W2)).toBe("limit");
     expect(hub.followerCount(W2)).toBe(0);
   });
 
-  it("D28.7: uma conexão que falha ao entregar não impede as outras", () => {
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 50 });
+  it("D28.7: uma conexão que falha ao entregar não impede as outras, e a falha é reportada ao onDeliveryFailure", () => {
+    const failures: unknown[] = [];
+    const hub = new RealtimeHub({ maxFollowsPerConnection: 50, onDeliveryFailure: (error) => failures.push(error) });
+    const closed = new Error("socket fechado");
     const broken: RealtimeConnection = {
       viewer: operator,
       deliver: () => {
-        throw new Error("socket fechado");
+        throw closed;
       },
     };
     const ok = connection(operator);
@@ -91,5 +103,6 @@ describe("D28.2 D28.3: hub de conexões e wallets seguidas", () => {
 
     expect(hub.dispatch(event(W1))).toBe(1);
     expect(ok.received.length).toBe(1);
+    expect(failures).toEqual([closed]);
   });
 });

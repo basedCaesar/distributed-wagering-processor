@@ -23,6 +23,8 @@ export interface TestWsClient {
   events(): EventMessage[];
   send(frame: unknown): void;
   sendRaw(frame: string): void;
+  /** Frame binário (D28.2: antes do `auth`, `4400`). */
+  sendBinary(frame: Uint8Array): void;
   /** Espera uma mensagem que satisfaça `predicate` (estado observável, sem `sleep`). */
   waitFor(predicate: (message: ServerMessage) => boolean, what: string, timeoutMs?: number): Promise<ServerMessage>;
   /** Resolve no fechamento, com o código e o motivo. */
@@ -50,6 +52,7 @@ export async function openClient(url: string): Promise<TestWsClient> {
     events: () => messages.filter((message): message is EventMessage => message.type === "event"),
     send: (frame) => socket.send(JSON.stringify(frame)),
     sendRaw: (frame) => socket.send(frame),
+    sendBinary: (frame) => socket.send(frame),
     async waitFor(predicate, what, timeoutMs = 20_000) {
       await waitFor(() => messages.some(predicate), what, timeoutMs);
       return messages.find(predicate) as ServerMessage;

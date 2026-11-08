@@ -78,7 +78,12 @@ describe("D28.5 D28.6: fila por instância, com id estável, da infra", () => {
       );
     const received: RealtimeEvent[] = [];
     const follower: RealtimeConnection = { viewer: { roles: new Set(["operator"]) }, deliver: (event) => received.push(event) };
-    const hub = new RealtimeHub({ maxFollowsPerConnection: 50 });
+    const hub = new RealtimeHub({
+      maxFollowsPerConnection: 50,
+      onDeliveryFailure: (error) => {
+        throw error;
+      },
+    });
     hub.follow(follower, walletId);
     const staleBefore = await metricValue("realtime_events_total", { outcome: "stale" });
     const before = balanceChangedEnvelope(walletId, 2);

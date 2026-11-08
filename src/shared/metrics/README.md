@@ -35,7 +35,7 @@ docker compose exec api bun -e 'console.log(await (await fetch("http://localhost
 | `audited_events_out_of_order_total` | counter | — | o auditor recebeu um evento fora de ordem por (wallet, tipo) | D20.1 |
 | `accounting_entries_posted_total` | counter | — | o `accounting-consumer` gravou um lançamento de partidas dobradas | D27.6 |
 | `realtime_connections` | gauge | — | conexões WebSocket abertas nesta instância do `realtime` | D28.11 |
-| `realtime_events_total` | counter | `outcome` | mensagem da fila do `realtime`: `forwarded` (enviada aos sockets que seguem a wallet), `ignored` (`eventType` fora da lista), `invalid` (envelope fora do schema; apagada, sem DLQ) ou `stale` (enviada antes da subida, ou recebida durante o stop; apagada sem envio) | D28.6, D28.7, D28.11 |
+| `realtime_events_total` | counter | `outcome` | mensagem da fila do `realtime`: `forwarded` (enviada aos sockets que seguem a wallet), `ignored` (`eventType` fora da lista), `invalid` (envelope fora do schema; apagada, sem DLQ), `stale` (enviada antes da subida; apagada sem envio) ou `shutdown` (trazida pelo long poll que terminou durante o stop; apagada sem envio) | D28.5, D28.6, D28.7, D28.11 |
 
 Do `accounting-consumer` (D27.6), as métricas do laço genérico ganham um valor cada: `wagering_retries_total{component="accounting_consumer"}`, `wagering_dlq_messages_total{consumer="accounting"}` e `sqs_dlq_depth{queue="accounting_dlq"}`.
 

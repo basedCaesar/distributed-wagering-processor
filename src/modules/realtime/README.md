@@ -46,14 +46,16 @@ O token vai no 1º frame, e não no header nem na query string: o `WebSocket` do
 |---|---|---|
 | `4400` | protocolo violado antes do `auth` (outro `type`, JSON quebrado, frame binário) | não |
 | `4401` | token ausente, inválido, sem papel, ou que **venceu durante a conexão** | com outro token |
-| `4408` | o `auth` não chegou em 5 s | sim |
-| `4503` | JWKS do emissor indisponível (D16.16) | sim |
+| `4408` | o `auth` não chegou em 5 s (o prazo para quando o frame chega) | sim |
+| `4503` | JWKS do emissor indisponível (D16.16), inclusive um JWKS que não responde dentro do `AUTH_JWKS_TIMEOUT_MS` | sim |
 | `1001` | o processo está parando (SIGTERM) | sim, em outra instância |
 | `1009` | frame acima de 4 KB | não |
 | `1011` | erro inesperado do servidor | sim |
 | `1013` | cliente lento (mais de 1 MB esperando envio) | sim |
 
-Depois do `auth`, um frame inválido não fecha a conexão: responde `error`. `ping` a cada 30 s; sem `pong` até o ping seguinte, a conexão é encerrada.
+O prazo de 5 s vale até o frame do `auth` **chegar**. A validação do token tem o próprio prazo (o timeout do JWKS): um JWKS que não responde fecha com `4503` (reconectar resolve), não com `4408`.
+
+Depois do `auth`, um frame inválido não fecha a conexão: responde `error`. `ping` a cada 30 s; sem `pong` até o ping seguinte, a conexão é encerrada (`terminate`, sem frame de fechamento: o cliente vê `1006`).
 
 ## Quem vê o quê (D28.3, D10.2)
 
@@ -151,8 +153,8 @@ Opções: `--client provider-a` (vê só as transações dele), `--url`, `--api`
 
 - `realtime-1` e `realtime-2` no Compose de dev, mesma imagem, `stop_grace_period: 30s`, sem `ports` (só pelo nginx). Não esperam o Postgres nem o `migrate`.
 - **Config própria e mínima** (`infra/realtime-config.ts`): `AWS_REGION`, `AWS_ENDPOINT`, `METRICS_PORT`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AUTH_JWKS_URL`, `AUTH_JWKS_TIMEOUT_MS`, `REALTIME_INSTANCE_ID`, `REALTIME_PORT` (3001) e, opcionais, `REALTIME_AUTH_TIMEOUT_MS` (5000), `REALTIME_MAX_FOLLOWS` (50), `REALTIME_PING_INTERVAL_MS` (30000), `REALTIME_RECEIVE_WAIT_S` (20). **Sem credencial de banco.**
-- **SIGTERM:** fecha os sockets com `1001`, deixa o long poll em andamento terminar (sem abortar, como a D19.9; o que ele trouxer é apagado sem envio) e sai. A fila e a assinatura ficam: a volta da mesma instância as reaproveita.
-- **Métricas** (`/metrics`, porta interna, D22.1): `realtime_connections` e `realtime_events_total{outcome}` (`forwarded`, `ignored`, `invalid`, `stale`).
+- **SIGTERM:** fecha os sockets com `1001`, deixa o long poll em andamento terminar (sem abortar, como a D19.9; o que ele trouxer é apagado sem envio, com `outcome="shutdown"`) e sai. A fila e a assinatura ficam: a volta da mesma instância as reaproveita.
+- **Métricas** (`/metrics`, porta interna, D22.1): `realtime_connections` e `realtime_events_total{outcome}` (`forwarded`, `ignored`, `invalid`, `stale` = descarte por idade, `shutdown` = recebida durante o stop).
 - **Logs:** só ids, códigos de fechamento e contagens; nunca token, valores, saldos nem `playerId` (D11.1).
 - **NestJS no Bun (D28.10):** `@nestjs/websockets` + `@nestjs/platform-ws` (`WsAdapter`, WebSocket puro), provado por `test/integration/realtime/ws-adapter.spec.ts`. O gateway não usa `@SubscribeMessage`: cada conexão é uma `ConnectionSession`, que responde pelo `send` no formato `{type}` (o retorno de um handler sairia embrulhado em `{event, data}`).
 
@@ -173,13 +175,16 @@ O realtime importa só `src/shared/*`; de `modules/wagering`, `modules/accountin
 | Teste | O que prova |
 |---|---|
 | `test/unit/realtime/*.spec.ts` | projeção por lista fechada, permissões, hub, `WalletView`, frames, config, fronteira |
+| `test/unit/realtime/connection-session.spec.ts` | cliente lento → `1013`; sem `pong` → `terminate`; erro inesperado → `1011` |
+| `test/unit/realtime/event-loop.spec.ts` | laço sequencial (a 2ª mensagem só depois do delete da 1ª); o que chega durante o stop sai como `shutdown` |
+| `test/unit/realtime/sensitive-logs.spec.ts` | logs dos fechamentos `4401` (recusado e vencido), `1011` e da falha de entrega, sem token, valores nem `playerId` |
 | `test/integration/realtime/ws-adapter.spec.ts` | `WsAdapter` no Bun (D28.10) |
-| `test/integration/realtime/realtime.spec.ts` | BET pelo HTTP → eventos no cliente; recusas (`4408`, `4401`, `4400`, `1009`, `4503`); expiração do token; frames inválidos e limite; isolamento entre wallets; permissões por provedor |
+| `test/integration/realtime/realtime.spec.ts` | BET pelo HTTP → eventos no cliente; recusas (`4408`, `4401`, `4400` com frame binário, `1009`, `4503`, inclusive JWKS pendurado além do prazo do `auth`); expiração do token; frames inválidos e limite; isolamento entre wallets; permissões por provedor |
 | `test/integration/realtime/instance-queue.spec.ts` | descarte por idade (antes da subida não chega, depois chega); subida sem fila falha; stop e `kill -9` mantêm fila e assinatura, a volta as reaproveita |
 | `test/integration/realtime/processes.spec.ts` | duas instâncias em processos separados, cada cliente recebe na sua; logs sem dado sensível |
 | `test/integration/realtime/localstack.spec.ts` | as filas do `localstack-init.sh` |
 | `test/integration/shutdown/realtime-sigterm.spec.ts` | SIGTERM real: `1001` e saída em menos de 30 s (fora do Windows; o CI conta 7) |
-| `test/concurrency/realtime.spec.ts` | 50 BETs em paralelo, 2 instâncias, 4 clientes: versões em ordem e sem furo |
+| `test/concurrency/realtime.spec.ts` | a ordem que vem do FIFO por wallet e do publisher (D9.2): 50 BETs em paralelo, 2 instâncias, 4 clientes; todas as BETs contadas, eventos exatos por cliente e versões contíguas. O laço sequencial do realtime é provado no teste de unidade |
 
 ## Limitações (D28.14)
 

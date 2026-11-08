@@ -9,10 +9,10 @@ import {
   type TestTopic,
   unpublishedCount,
 } from "../../support/outbox";
-import { ProcessGroup } from "../../support/processes";
+import { ProcessGroup, waitFor } from "../../support/processes";
 import { deleteInstanceQueue, spawnRealtime } from "../../support/realtime";
 import { brl, createWallet, submit, wagerBody } from "../../support/wagering";
-import { balanceVersions, followingClient } from "../../support/ws-client";
+import { balanceVersions, followingClient, openClient } from "../../support/ws-client";
 
 const SLOW_TEST_MS = 90_000;
 
@@ -33,7 +33,8 @@ afterEach(async () => {
 });
 
 describe("D28.5 D28.11: duas instâncias do realtime em processos separados", () => {
-  it("D28.5 V-03: cada cliente recebe o evento na instância em que está conectado (fan-out por fila de instância)", async () => {
+  // Os fechamentos 1011 e a falha de entrega não têm como ser provocados num processo real: estão em test/unit/realtime/sensitive-logs.spec.ts.
+  it("D28.5 V-03 D11.1: cada cliente recebe o evento na instância em que está conectado (fan-out por fila de instância); os logs, inclusive os dos fechamentos 4401, não levam dado sensível", async () => {
     const api = await startTestApi();
     const publisher = await startTestPublisher(topic);
     try {
@@ -58,11 +59,23 @@ describe("D28.5 D28.11: duas instâncias do realtime em processos separados", ()
         client.close();
       }
 
+      // Fechamentos que logam (D28.2): token recusado numa instância, token que vence durante a conexão na outra.
+      const refusedToken = await api.issuer.token({ foreignKey: true });
+      const refused = await openClient(one.url);
+      refused.send({ type: "auth", token: refusedToken });
+      expect((await refused.closed).code).toBe(4401);
+      const expiringToken = await api.issuer.token({ roles: ["operator"], providerId: null, expiresIn: 2 });
+      const expiring = await followingClient(two.url, expiringToken, [wallet.id]);
+      expect((await expiring.closed).code).toBe(4401);
+      for (const instance of [one, two]) {
+        await waitFor(() => instance.process.lines.some((line) => line.includes('"closeCode":4401')), "log do fechamento 4401");
+      }
+
       // D11.1 D28.11: nenhuma linha dos dois processos traz token, valor, saldo ou playerId.
       const lines = [...one.process.lines, ...two.process.lines];
       expect(lines.some((line) => line.includes('"msg":"realtime iniciado"'))).toBe(true);
       const leaks = lines.filter((line) =>
-        [providerToken, wallet.playerId, "25.00", "75.00", "100.00", "balance", "authorization"].some((secret) =>
+        [providerToken, refusedToken, expiringToken, wallet.playerId, "25.00", "75.00", "100.00", "balance", "authorization"].some((secret) =>
           line.toLowerCase().includes(secret.toLowerCase()),
         ),
       );

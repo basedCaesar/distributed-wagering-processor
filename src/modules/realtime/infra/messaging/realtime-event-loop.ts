@@ -15,8 +15,9 @@ export interface RealtimeEventLoopDeps {
   hub: RealtimeHub;
   logger: Logger;
   /**
-   * Início da instância (ms desde a época), guardado antes da assinatura:
-   * o que foi enviado à fila antes disso é descartado (D28.6).
+   * Início da instância (ms desde a época), guardado antes de resolver a
+   * fila e abrir a porta: o que foi enviado à fila antes disso é descartado
+   * (D28.6).
    */
   startedAt: number;
   receiveWaitSeconds: number;
@@ -100,7 +101,8 @@ export class RealtimeEventLoop {
 
   /** Decide e entrega. Nenhum valor do corpo vai para o log (D11.1). */
   private forward(message: Message): RealtimeEventOutcome {
-    if (!this.running) return "stale";
+    // Trazido pelo long poll que terminou durante o stop: apagado sem envio (D28.5).
+    if (!this.running) return "shutdown";
     const sentAt = Number.parseInt(message.Attributes?.SentTimestamp ?? "", 10);
     if (!Number.isFinite(sentAt) || sentAt < this.deps.startedAt) return "stale";
     try {

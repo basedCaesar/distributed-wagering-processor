@@ -21,7 +21,7 @@ const schema = z.object({
   authTimeoutMs: z.coerce.number().int().positive().default(5000),
   maxFollowsPerConnection: z.coerce.number().int().positive().default(50),
   pingIntervalMs: z.coerce.number().int().positive().default(30_000),
-  /** Long poll do receive (D19.10); o stop aborta o que estiver em andamento. */
+  /** Long poll do receive (D19.10); o stop não o aborta: ele termina, e o que trouxer é apagado sem envio (D28.5). */
   receiveWaitSeconds: z.coerce.number().int().min(1).max(20).default(20),
 });
 

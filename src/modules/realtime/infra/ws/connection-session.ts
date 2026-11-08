@@ -121,6 +121,9 @@ export class ConnectionSession implements RealtimeConnection {
       const message = parseClientMessage(text);
       if (message.type !== "auth") return this.close(CloseCode.ProtocolViolation, "auth first");
       token = message.token;
+      // O prazo da D28.2 é para o `auth` chegar. A validação tem o próprio
+      // prazo (o timeout do JWKS), que estoura como `4503`, não como `4408`.
+      clearTimeout(this.authTimer);
     } catch (error) {
       if (!(error instanceof ValidationError)) throw error;
       return isAuthAttempt(text)
@@ -140,7 +143,6 @@ export class ConnectionSession implements RealtimeConnection {
     if (this.state === "closed") return;
     this.identity = identity;
     this.state = "authenticated";
-    clearTimeout(this.authTimer);
     this.scheduleExpiry(token);
     this.send({ type: "authenticated", roles: [...identity.roles].sort() });
   }
