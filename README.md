@@ -46,7 +46,7 @@ bun run infra:up          # 1ª vez ≈ 4 min 30 s (build da imagem e import do 
 bun run acceptance        # ≈ 5 s; pode rodar de novo (a 2ª vez é o replay)
 ```
 
-Sobe os 11 processos da topologia (tabela em [Processos](#processos)), o Postgres, o LocalStack e o Keycloak, e cria a wallet do exemplo ([seed](#a-wallet-do-exemplo-já-existe-seed-d231)). A aceitação termina com `Aceitação: tudo ok` e sai com 0; qualquer divergência sai com erro e diz qual passo falhou. Os mesmos `curl`, para rodar à mão: [Exemplos do enunciado](#exemplos-do-enunciado-9-e-10).
+Sobe os 15 processos da topologia (tabela em [Processos](#processos)), o Postgres, o LocalStack e o Keycloak, e cria a wallet do exemplo ([seed](#a-wallet-do-exemplo-já-existe-seed-d231)). A aceitação termina com `Aceitação: tudo ok` e sai com 0; qualquer divergência sai com erro e diz qual passo falhou. Os mesmos `curl`, para rodar à mão: [Exemplos do enunciado](#exemplos-do-enunciado-9-e-10).
 
 ### 2. Explorar a API pelo Swagger (≈ 5 min)
 
