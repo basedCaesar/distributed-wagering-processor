@@ -15,7 +15,7 @@ Processador distribuído de transações de apostas (`BET`, `WIN`, `LOSS`, `REFU
 - Docker com Docker Compose
 - `curl` (já vem no Linux, no macOS e no Windows 10+)
 
-Portas usadas pelo Compose de dev: 3000 (api e WebSocket em `/realtime`), 5432 (Postgres), 4566 (LocalStack) e 8080 (Keycloak).
+Portas usadas pelo Compose de dev: 3000 (api e WebSocket em `/realtime`), 5432 (Postgres), 4566 (LocalStack) e 8080 (Keycloak); pelo de teste: 5433, 4567 e 8081. Se alguma estiver ocupada: [Se uma porta estiver ocupada](#se-uma-porta-estiver-ocupada).
 
 ## Começo rápido
 
@@ -34,13 +34,129 @@ O `bun run acceptance` espera a api ficar pronta (até 3 min), pede os tokens ao
 
 Cada passo é conferido, e qualquer divergência faz o comando sair com erro. O §10 é conferido pela linha da inbox do consumidor (`msg-123`), consultada com o papel da app dentro do container do Postgres. Pode rodar de novo: o resultado é o mesmo, com `idempotentReplay: true`, e o §10 avisa que a inbox já tinha a mensagem, sem afirmar um novo processamento (D23.6). `ACCEPTANCE_API_URL` e `ACCEPTANCE_KEYCLOAK_URL` trocam os hosts, se precisar (D23.7). A aceitação fica fora do `bun run check`, porque precisa do Compose de dev completo.
 
-**Tempo real (D28).** Para ver o saldo da wallet do exemplo mudar ao vivo enquanto roda os `curl` do §9 noutro terminal:
+## Como avaliar
+
+Roteiro para quem nunca viu o projeto, na ordem. Os tempos são os medidos na máquina de desenvolvimento (Windows 11, Docker Desktop no WSL2, Ryzen 7 3700X, ambiente em [`docs/load-test.md`](docs/load-test.md#ambiente)); numa máquina Linux costuma ser mais rápido. Os comandos funcionam no Git Bash, no Linux e no macOS; no PowerShell, só a função do token muda ([Token](#token-keycloak-d101-d23)).
+
+### 1. Subir tudo e rodar os exemplos do enunciado (≈ 4 min)
+
+```bash
+bun install
+bun run infra:up          # 1ª vez ≈ 3 min 40 s (build da imagem e import do realm no Keycloak); depois ≈ 1 min
+bun run acceptance        # ≈ 10 s; pode rodar de novo (a 2ª vez é o replay)
+```
+
+Sobe os 11 processos da topologia (tabela em [Processos](#processos)), o Postgres, o LocalStack e o Keycloak, e cria a wallet do exemplo ([seed](#a-wallet-do-exemplo-já-existe-seed-d231)). A aceitação termina com `Aceitação: tudo ok` e sai com 0; qualquer divergência sai com erro e diz qual passo falhou. Os mesmos `curl`, para rodar à mão: [Exemplos do enunciado](#exemplos-do-enunciado-9-e-10).
+
+### 2. Explorar a API pelo Swagger (≈ 5 min)
+
+1. Abra <http://localhost:3000/docs> (aberto, sem token).
+2. Gere um token no terminal. Linux, macOS ou Git Bash:
+
+   ```bash
+   curl -s -X POST http://localhost:8080/realms/wagering/protocol/openid-connect/token \
+     -d grant_type=client_credentials -d client_id=operator -d client_secret=operator-dev-secret \
+     | sed -E 's/.*"access_token":"([^"]+)".*/\1/'
+   ```
+
+   Troque `operator` por `provider-a` (e o segredo por `provider-a-dev-secret`) para submeter transações; os papéis estão na [tabela dos clients](#token-keycloak-d101-d23).
+3. **Authorize** (cadeado no topo), cole o token **sem** o prefixo `Bearer` e confirme.
+4. **Try it out** em qualquer endpoint. O token vale 5 minutos; vencido, a api responde `401`, e é só gerar outro.
+
+### 3. Rodar os testes (≈ 10 min)
+
+```bash
+bun run infra:down        # recomendado: o Compose de dev disputa CPU com os testes de concorrência
+bun run infra:test:up     # Postgres, LocalStack e Keycloak de teste, em portas próprias; 1ª vez ≈ 2 min 15 s, depois ≈ 30 s
+bun run check             # typecheck, lint, unidade, migrations, integração, concorrência e e2e: ≈ 7 min 30 s
+```
+
+O `check` termina sem nenhuma falha. **No Windows, 7 testes aparecem como `skip`**: são o `SIGTERM` real, que o Windows não entrega (o processo morre à força); no CI, em Linux, eles rodam e o job falha se algum for pulado ([`test/README.md`](test/README.md#plataforma-o-sigterm-real-só-roda-fora-do-windows-no-ci-sempre)). Depois, `bun run infra:test:down` e, para os próximos passos, `bun run infra:up` de novo.
+
+### 4. Conferir o diário de partidas dobradas (≈ 10 s)
+
+```bash
+bun run accounting:reconcile --wait 120
+```
+
+Roda num container na rede do Compose de dev e compara o diário (cada lançamento debita uma conta e credita outra) com o saldo de cada wallet do núcleo. Sai com 0 e imprime `"consistent": true`, `"settled": true` e o `trialBalance` de cada moeda com `"balanced": true`. Com `--wait`, espera o diário alcançar os eventos ainda não consumidos. Como funciona: [`src/modules/accounting/README.md`](src/modules/accounting/README.md).
+
+### 5. Ver o tempo real (≈ 2 min)
+
+**Terminal 1**, seguindo a wallet do exemplo:
 
 ```bash
 bun run realtime:watch 0192f291-27dd-7d3f-8071-5f8685deef37
 ```
 
-Ele segue a wallet por WebSocket (`ws://localhost:3000/realtime`, com o token do Keycloak), faz o GET inicial e imprime uma linha por evento. O WebSocket é notificação; a verdade é o `GET /wallets/:id`. Protocolo, permissões e reconexão em [`src/modules/realtime/README.md`](src/modules/realtime/README.md).
+Ele faz o GET inicial (uma linha com o saldo e a `version`) e fica esperando.
+
+**Terminal 2**, uma BET de 10.00 com uma key nova (o `token` é a função de [Token](#token-keycloak-d101-d23)):
+
+```bash
+PROVIDER_TOKEN=$(token provider-a)
+KEY="demo-$(date +%s)"
+curl -s -X POST http://localhost:3000/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER_TOKEN" -H "Idempotency-Key: provider-a:$KEY" -H "Content-Type: application/json" \
+  -d '{"providerId":"provider-a","externalTransactionId":"'"$KEY"'","playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37","roundId":"round-demo","gameId":"fortune-chimp","kind":"BET","money":{"amount":"10.00","currency":"BRL"}}'
+```
+
+No terminal 1, os eventos da BET aparecem em menos de 1 s (o saldo cai 10.00 e a `version` sobe). **Antes de rodar a aceitação de novo, desfaça a BET da demonstração**: a aceitação confere o saldo de 975.00 depois da BET do §9. O `ROLLBACK` também aparece no terminal 1:
+
+```bash
+curl -s -X POST http://localhost:3000/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER_TOKEN" -H "Idempotency-Key: provider-a:$KEY-rb" -H "Content-Type: application/json" \
+  -d '{"providerId":"provider-a","externalTransactionId":"'"$KEY"'-rb","playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37","roundId":"round-demo","gameId":"fortune-chimp","kind":"ROLLBACK","referenceExternalTransactionId":"'"$KEY"'","money":{"amount":"10.00","currency":"BRL"}}'
+```
+
+`Ctrl+C` encerra o `realtime:watch`. O WebSocket é notificação; a verdade é o `GET /wallets/:id`. Protocolo, permissões e reconexão: [`src/modules/realtime/README.md`](src/modules/realtime/README.md).
+
+### 6. Teste de carga (opcional)
+
+```bash
+bun run infra:test:down   # o test:load aborta com o Compose de teste no ar
+bun run infra:up
+bun run test:load --rounds 1   # uma rodada, ≈ 30 min, para ver funcionando
+bun run test:load              # as 3 rodadas do relatório, ≈ 1 h 30
+```
+
+O relatório sai em `logs/load/<execução>/report.md`. Só a correção depois da carga ou um status inesperado reprovam; latência nunca reprova. Números, ambiente e análise das 3 rodadas: [`docs/load-test.md`](docs/load-test.md).
+
+### 7. CI e provas
+
+- **CI:** o badge no topo deste README mostra o último push; o histórico fica na aba **Actions** do GitHub (como ler uma rodada e onde ficam os logs: [CI](#ci)).
+- **Provas:** cada proteção (lock, constraint, trigger, inbox, papel do banco) é removida por um patch, e um teste nomeado precisa falhar. Lista, resultado e o que cada uma prova: [`proofs/README.md`](proofs/README.md). Para rodar: `bun run test:proofs`, com a infra de teste no ar, ou o workflow **Proofs** na aba Actions.
+
+### Se uma porta estiver ocupada
+
+| Porta | Quem usa | Compose |
+|---|---|---|
+| 3000 | nginx (api e WebSocket `/realtime`) | dev |
+| 5432 | Postgres | dev |
+| 4566 | LocalStack | dev |
+| 8080 | Keycloak | dev |
+| 5433 | Postgres de teste | teste |
+| 4567 | LocalStack de teste | teste |
+| 8081 | Keycloak de teste | teste |
+
+O sintoma é o `docker compose up` falhar com `ports are not available` ou `address already in use`. Para achar quem ocupa a porta:
+
+```bash
+netstat -ano | findstr :5432      # Windows (PowerShell ou cmd): o último número é o PID
+tasklist /FI "PID eq <pid>"       # Windows: o nome do processo
+lsof -nP -iTCP:5432 -sTCP:LISTEN  # Linux e macOS
+```
+
+O mais simples é parar esse processo. Se não der, troque a porta do host no Compose de dev com um `docker-compose.override.yml` na raiz do repositório (o Compose o lê sozinho; `!override` exige o Compose 2.24 ou mais novo):
+
+```yaml
+services:
+  postgres:
+    ports: !override
+      - "15432:5432"
+```
+
+Nesta máquina, por exemplo, há um PostgreSQL nativo do Windows na 5432. A 5432 do host só é usada por quem roda fora do Docker (`bun run migration:up`, a api fora do container): a aceitação e o `accounting:reconcile` falam com o Postgres de dentro da rede do Compose. Para trocar a 3000 ou a 8080, use também `ACCEPTANCE_API_URL` / `ACCEPTANCE_KEYCLOAK_URL` na aceitação e `--api`, `--url` e `--keycloak` no `realtime:watch`. As portas de teste estão no `docker-compose.test.yml` e no `.env.test`; trocá-las exige mudar os dois.
 
 ## Comandos
 
@@ -91,7 +207,7 @@ Números, ambiente e análise: [`docs/load-test.md`](docs/load-test.md). Como fu
 
 ## CI
 
-GitHub Actions, em Linux (`ubuntu-latest`), com o Bun 1.4.4 (D25):
+GitHub Actions, em Linux (`ubuntu-latest`), com o Bun 1.4.4 e as actions em versões exatas (D25). Todo step roda com `bash -eo pipefail` (D25.9): um comando que falha antes de um `| tee` reprova o step.
 
 | Workflow | Quando | O que roda |
 |---|---|---|
@@ -322,9 +438,9 @@ Morto à força no meio da carga, nada se perde nem duplica: a transação desfe
 
 Variáveis: `.env.example` (dev) e `.env.test` (testes). Nenhum segredo real: as senhas do banco, o admin do Keycloak e os segredos dos clients são de desenvolvimento.
 
-O Postgres tem quatro papéis (D7.3, D27.3): `postgres` só para o init do container, `wagering_owner` para as migrations (`DB_MIGRATION_USER`), `wagering_app` para a aplicação e os testes (`DB_USER`), sem `UPDATE`/`DELETE` no ledger, e `accounting_app` só para o schema `accounting` (o `accounting-consumer`). Os papéis nascem no init, que só roda num volume novo: num ambiente de antes da S14, recrie o volume uma vez (`docker compose down -v`, D27.9). Detalhes em [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md).
+O Postgres tem quatro papéis (D7.3, D27.3): `postgres` só para o init do container, `wagering_owner` para as migrations (`DB_MIGRATION_USER`), `wagering_app` para a aplicação e os testes (`DB_USER`), sem `UPDATE`/`DELETE` no ledger, e `accounting_app` só para o schema `accounting` (o `accounting-consumer`). Os papéis nascem no init, que só roda num volume novo: num volume criado antes do contexto `accounting` (sem o papel `accounting_app`), recrie o volume uma vez (`docker compose down -v`, D27.9). Detalhes em [`src/modules/wagering/infra/persistence/README.md`](src/modules/wagering/infra/persistence/README.md).
 
-O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto e cria:
+O `scripts/localstack-init.sh` roda dentro do LocalStack quando ele fica pronto, e o healthcheck só passa depois de ele terminar com sucesso (`/_localstack/init/ready`, D27.11). Assim, nenhum processo sobe, e nenhum evento sai, antes de as filas e as assinaturas existirem. O init cria:
 
 | Recurso | Atributos | Decisão |
 |---|---|---|

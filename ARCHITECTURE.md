@@ -152,7 +152,7 @@ O Postgres garante as invariantes do §6 mesmo contra SQL direto:
 - FKs compostas de wallet, moeda e rodada da referência;
 - máquina de estados.
 
-Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 14 proteções, uma por vez, exigindo que um teste nomeado falhe. Detalhes: [`persistence/README.md`](src/modules/wagering/infra/persistence/README.md), [`proofs/README.md`](proofs/README.md).
+Cada garantia tem um teste que tenta violá-la, e `bun run test:proofs` remove 17 proteções, uma por vez, exigindo que um teste nomeado falhe: 14 do núcleo e 3 do diário de partidas dobradas (débito = crédito, append-only e o lock da conta da wallet). Detalhes: [`persistence/README.md`](src/modules/wagering/infra/persistence/README.md), [`proofs/README.md`](proofs/README.md).
 
 ## Interpretações (R-07-15)
 
@@ -218,7 +218,7 @@ Protocolo, diagramas do fluxo e da reconexão: [`src/modules/realtime/README.md`
 - **Publicação dupla possível:** com um lease vencido no meio da publicação, um evento pode sair duas vezes; o consumidor deduplica pelo `eventId` (D20.5).
 - **Seed só no dev:** a wallet do exemplo do §9 é criada por um seed do Compose de dev, para os exemplos funcionarem como estão escritos (D23.1); em produção não existe seed.
 - **Segredos de dev:** os segredos dos clients do Keycloak e o admin estão no repositório e são só de desenvolvimento. Em produção, viriam de um cofre (o encaixe `SecretsProvider`, D12.3).
-- **Partidas dobradas com consistência eventual:** o diário fica atrás do núcleo enquanto os eventos não foram consumidos (o `accounting-consumer`, como o auditor, faz uma transação por evento, D26.13). Ele só vê os eventos publicados depois de a fila dele existir: sem backfill. Uma metade que nunca chegasse deixaria o par sem lançamento, visível só na reconciliação (D27.7, D27.9).
+- **Partidas dobradas com consistência eventual:** o diário fica atrás do núcleo enquanto os eventos não foram consumidos (o `accounting-consumer`, como o auditor, faz uma transação por evento, D26.13). Ele só vê os eventos publicados depois de a fila dele existir: sem backfill. No Compose, a fila nasce no init do LocalStack, e nenhum processo sobe antes de o init terminar (D27.11). Uma metade que nunca chegasse deixaria o par sem lançamento, visível só na reconciliação (D27.7, D27.9).
 - **WebSocket com instâncias fixas:** cada instância do `realtime` precisa de um id estável e da fila dela na infra. Réplicas de nome dinâmico (escala automática) exigiriam criar a fila e a assinatura na subida e varrer as órfãs, o que poria o SNS fora do publisher (D20.10). A entrega ao cliente é por melhor esforço: o que acontece enquanto ele está fora só aparece no GET (D28.8, D28.14).
 - **Laço SQS genérico dentro do núcleo:** o accounting importa o `SqsConsumer` de `wagering/infra/messaging/`, limitado por lint e teste; movê-lo para `src/shared/messaging/` é dívida técnica (D27.8).
 - **Capacidade medida só numa máquina de desenvolvimento:** o teste de carga (`bun run test:load`, D26) roda o k6 e os 11 processos na mesma VM do Docker Desktop, contra o LocalStack. Os números valem para comparar degraus e cenários, não como capacidade de produção. A hot wallet é serializada pelo lock pessimista da wallet (D7.2), por desenho. Números e análise em [`docs/load-test.md`](docs/load-test.md).

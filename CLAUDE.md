@@ -38,6 +38,8 @@ Processos (D7.4), mesma imagem, entrypoints diferentes:
 | `accounting-consumer` (serviço separado, D27) | 2 |
 | `realtime` (serviço separado, sem banco, D28) | 2 |
 
+Ao lado deles, no Compose de dev: o `nginx` (balanceia as 3 `api` na porta 3000 e o WebSocket `/realtime` nas 2 `realtime`) e dois one-shots da mesma imagem, `migrate` e `seed` (D23.1).
+
 ## Ambiente de desenvolvimento
 
 - Windows + Docker Desktop (backend WSL2). O Claude Code roda os comandos no Git Bash.
@@ -175,7 +177,12 @@ bun run test:repeat concurrency 10  # n rodadas seguidas; log de cada falha em l
 bun run test:proofs       # remove proteções e exige que os testes falhem
 bun run migration:verify  # up → down → up
 bun run acceptance        # exemplos do §9 e do §10, literalmente
+bun run accounting:reconcile --wait 120   # diário de partidas dobradas × núcleo (D27.7)
+bun run realtime:watch <walletId>         # segue uma wallet por WebSocket (D28.13)
+bun run test:load         # k6 contra o Compose de dev, 3 rodadas (D26); fora do check e do CI
 ```
+
+O CI (`.github/workflows/`) roda o `check` e a aceitação a cada push, com `bash -eo pipefail` (D25.9).
 
 ## Definição de pronto de uma fatia
 

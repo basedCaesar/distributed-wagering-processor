@@ -1,6 +1,8 @@
 # Provas
 
-Um teste verde só prova algo se ele **falha** quando a proteção que ele cobre some. Cada patch desta pasta remove uma proteção, e `bun run test:proofs` exige que o teste nomeado para ela falhe (D11.4, D21.8). Resultado da última rodada: tabela "Provas de que os testes protegem" do [`AI_WORKFLOW.md`](../AI_WORKFLOW.md).
+Um teste verde só prova algo se ele **falha** quando a proteção que ele cobre some. Cada patch desta pasta remove uma proteção, e `bun run test:proofs` exige que o teste nomeado para ela falhe (D11.4, D21.8).
+
+**Última rodada: 17/17**, no workflow **Proofs** do GitHub Actions (execução #4, commit `f54b466`, 08/11/2026, 1 min 40 s). O step `bun run test:proofs` não passa por `tee`, então o código de saída dele sempre valeu, mesmo antes do `pipefail` da D25.9. O que cada prova mostrou ao falhar: tabela "Provas de que os testes protegem" do [`AI_WORKFLOW.md`](../AI_WORKFLOW.md).
 
 ```bash
 bun run infra:test:up
@@ -43,9 +45,9 @@ Nada disso toca a árvore de trabalho nem o banco `wagering_test`. Uma proteçã
 | 16 | `16-journal-append-only.patch` | trigger append-only das linhas do diário (D27.3) | D27.3: nem o dono faz UPDATE ou DELETE em `accounting.journal_lines` |
 | 17 | `17-player-account-lock.patch` | `FOR UPDATE` da conta da wallet no accounting (D27.4) | D27.4: as duas metades do mesmo par processadas ao mesmo tempo em duas instâncias → exatamente um lançamento |
 
-**Prova 17: falha pela asserção, não pela sincronização.** O teste prende o `INSERT` das duas metades (uma transação aberta grava linhas com os mesmos `event_id`), um ponto que existe com e sem o lock. Com o `FOR UPDATE`, uma instância fica presa ao gravar a metade e a outra espera a conta; sem ele, as duas leem "sem a outra metade" e ficam presas ao gravar. Nos dois casos o `pg_locks` mostra as duas esperando. Solto o `INSERT`, com o lock sai exatamente um lançamento; sem ele, as duas metades ficam gravadas e nenhum lançamento sai, e o teste falha na asserção do lançamento (revisão da S14).
+**Prova 17: falha pela asserção, não pela sincronização.** O teste prende o `INSERT` das duas metades (uma transação aberta grava linhas com os mesmos `event_id`), um ponto que existe com e sem o lock. Com o `FOR UPDATE`, uma instância fica presa ao gravar a metade e a outra espera a conta; sem ele, as duas leem "sem a outra metade" e ficam presas ao gravar. Nos dois casos o `pg_locks` mostra as duas esperando. Solto o `INSERT`, com o lock sai exatamente um lançamento; sem ele, as duas metades ficam gravadas e nenhum lançamento sai, e o teste falha na asserção do lançamento.
 
-**Patches 02, 03, 04 e 12 na S14:** só o contexto do `migrations/index.ts` mudou (a migration do accounting é a vizinha anterior); a proteção removida é a mesma, e as quatro foram rodadas de novo (passa sem, falha com).
+**Patches 02, 03, 04 e 12 depois do accounting:** só o contexto do `migrations/index.ts` mudou (a migration do accounting é a vizinha anterior); a proteção removida é a mesma, e as quatro foram rodadas de novo (passa sem, falha com).
 
 **Provas 3 e 4: defesa em camadas.** Sem o `CHECK` de saldo ≥ 0, um saldo negativo ainda é recusado, por outro trigger (`23000`). Sem o trigger append-only, o `UPDATE` no ledger ainda é recusado, por um `CHECK` (`23514`). Nas duas, o teste falha **pelo código do erro**: ele é específico da proteção removida e exige que a recusa venha dela (`CHECK` e trigger append-only, respectivamente). A prova mostra que o teste pega a remoção, não que a proteção é a única barreira: há outra proteção que também recusa, de propósito (D7.3, invariantes no banco).
 

@@ -394,6 +394,22 @@ Se atrasar, os extras encolhem. O núcleo não.
 
 ---
 
+## S16 — Fechamento para a entrega
+
+Nada de funcionalidade nova.
+- `shell: bash` (`-eo pipefail`) nos dois workflows e actions em Node 24, em versão exata (D25.9);
+- README: "Como avaliar" (cada passo com o tempo medido, Swagger, testes, diário, tempo real, carga, CI, provas, porta ocupada);
+- `test/README.md` com os tempos reais do CI; README, `ARCHITECTURE.md`, `proofs/README.md` e `CLAUDE.md` coerentes com o projeto atual, sem jargão de fatia;
+- validação num clone limpo do commit final, só com os comandos do README.
+
+**Cobre:** D25.9
+
+**Aceite:**
+- 1ª execução do CI com o `pipefail`: resultado registrado, e cada falha investigada antes de qualquer mudança;
+- clone limpo: `infra:up`, `acceptance` duas vezes, `accounting:reconcile` e o `realtime:watch` recebendo um evento, com o hash registrado.
+
+---
+
 ## Depois do núcleo: extras
 
 Na ordem de `02-decisoes.md`, seção "Encaixes":

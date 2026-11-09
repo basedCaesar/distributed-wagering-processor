@@ -31,11 +31,32 @@ Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplic
 ## CI (D25)
 
 O `ci.yml` roda a cada push e pull request, em Linux (detalhes e como ver os resultados no [README](../README.md#ci)):
-- **job `check`:** `bun run infra:test:up` e `bun run check` inteiro. A saída vai para `logs/ci/check.log`, e o step seguinte falha se algum resumo do bun tiver `skip` ou `todo`, e se não houver exatamente 6 linhas `(pass) … recebe SIGTERM` (D25.3; a 6ª é o `accounting-consumer`, D27.9);
-- **job `acceptance`:** `bun run infra:up` e `bun run acceptance` duas vezes;
+- **job `check`:** `bun run infra:test:up` e `bun run check` inteiro. A saída vai para `logs/ci/check.log`, e o step seguinte falha se algum resumo do bun tiver `skip` ou `todo`, e se não houver exatamente 7 linhas `(pass) … recebe SIGTERM` (D25.3: os 5 entrypoints do núcleo, o `accounting-consumer`, D27.9, e o `realtime`, D28.12);
+- **job `acceptance`:** `bun run infra:up`; `bun run acceptance` duas vezes, com o `realtime:watch` seguindo a wallet do exemplo na 1ª e exigindo o evento da BET (D28.13); e `bun run accounting:reconcile --wait 120` (D27.7);
+- **todo step** roda com `bash -eo pipefail` (D25.9). Antes disso, um `comando | tee` saía com o código do `tee`, e um teste falhando deixava o job verde (registrado no `AI_WORKFLOW.md`);
 - **em falha:** `logs/` sobe como artefato, junto com os logs dos containers (D25.4).
 
 O `test:proofs` roda à parte (`proofs.yml`), manual ou toda segunda (D25.5).
+
+**Tempos reais** (runner `ubuntu-latest` de 4 vCPUs), das últimas execuções antes do `pipefail`, em 08/11/2026:
+
+| Execução | Commit | Job `check` (só o `bun run check`) | Job `acceptance` (`infra:up` · 2 aceitações · reconciliação) |
+|---|---|---|---|
+| CI #4 | `45eba41` | 4 min 49 s (3 min 51 s) | 4 min 26 s (1 min 58 s · 18 s · 2 min 1 s) |
+| CI #5 | `257fb6d` | 6 min 33 s (5 min 24 s) | 4 min 24 s (2 min 3 s · 9 s · 2 min 1 s) |
+| CI #6 | `f54b466` | 6 min 25 s (5 min 18 s) | 4 min 33 s (2 min 9 s · 10 s · 2 min 1 s) |
+
+| Execução | Commit | Job `test:proofs` (só as 17 provas) |
+|---|---|---|
+| Proofs #2 | `0479492` | 1 min 33 s (27 s) |
+| Proofs #3 | `45eba41` | 1 min 46 s (33 s) |
+| Proofs #4 | `f54b466` | 1 min 40 s (29 s) |
+
+O `infra:test:up` leva cerca de 1 min em todos os jobs. A reconciliação com 2 min 1 s é o `--wait 120` inteiro, o que indica que ela não assentou e que o `tee` escondeu a saída 1 (os logs dessas execuções não foram conferidos). Esses verdes não provam o `check`, a aceitação nem a reconciliação; as provas, sim (sem `tee`).
+
+**CI #7** (`e3115c6`, a 1ª com `pipefail`): o job `check` ficou verde. O `acceptance` falhou só no `accounting:reconcile`: 3 wallets, 1 atrasada, 0 divergentes, trial balance balanceado. A causa era o healthcheck do LocalStack, que passava antes de o init criar a fila do accounting, então os eventos da abertura da wallet do exemplo saíram antes de ela existir. Corrigido na raiz (D27.11); a prova pela ordem dos logs está no `AI_WORKFLOW.md`.
+
+**Nesta máquina** (Windows 11, Docker Desktop no WSL2, 08/11/2026, só a infra de teste no ar): `bun run check` verde em 444 s e 453 s, com unidade 706, integração 481 (7 `skip`, o `SIGTERM` no Windows), concorrência 33 e e2e 6. Numa rodada anterior, o `beforeAll` do `health.spec.ts`, que monta 5 apps Nest, estourou o prazo de 5 s do hook (7,7 s). Sozinho, o arquivo inteiro leva de 2,75 a 2,86 s (5 rodadas), e a falha não se repetiu nas duas rodadas seguintes. Fica registrada, sem mudança de prazo (D25.8: o tempo normal medido está abaixo de 40% do padrão).
 
 **Teste que só passa numa plataforma** é bug, não exceção do CI: nada de `skipIf(linux)` nem prazo maior para ficar verde (D25.7). O 1º caso foi o `removeLink` do `scripts/proofs.ts`. Fora do Windows, o junction do `node_modules` é um symlink comum, e o `rmdir` falhava com `ENOTDIR`.
 
