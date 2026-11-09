@@ -61,8 +61,15 @@ services:
       - "4567:4566"
     volumes:
       - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/localstack-init.sh:ro
+    # D27.11: saudável só depois de o init terminar com sucesso (filas e assinaturas
+    # criadas); o `--wait` do infra:test:up espera isso.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,urllib.request as r;d=json.load(r.urlopen('http://localhost:4566/_localstack/init/ready',timeout=2));s=d['scripts'];raise SystemExit(0 if d['completed'] and s and all(x['state']=='SUCCESSFUL' for x in s) else 1)"
       interval: 2s
-      timeout: 2s
+      timeout: 3s
       retries: 30
+      start_period: 60s

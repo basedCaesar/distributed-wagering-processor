@@ -536,8 +536,13 @@ describe("R-12-03 D22.5: conflitos de lock e tempo de espera", () => {
         const submission = submit(api, wagerBody(wallet));
         await waitForWalletLockWaiters(observer, lock, 1);
         const seenAt = performance.now();
+        // Medido até **antes** de mandar o ROLLBACK: o lock sai no servidor
+        // quando ele chega lá. Depois disso, a volta da resposta e o
+        // `holder.end()` não têm ordem garantida com o fim da espera do
+        // `lockById` (CI #3: espera de 3 ms × 16 ms medidos até o fim do release).
+        const releaseStartedAt = performance.now();
+        heldMs = releaseStartedAt - seenAt;
         await lock.release();
-        heldMs = performance.now() - seenAt;
         expect((await submission).status).toBe(200);
       } finally {
         await lock.release();
