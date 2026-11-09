@@ -20,21 +20,28 @@ env:
   # Saída do bun sem cores, para a conferência dos pulados ler o texto puro (D25.3).
   NO_COLOR: "1"
 
+# D25.9: com `shell: bash` explícito, o GitHub roda `bash --noprofile --norc -eo pipefail {0}`.
+# Sem isso, o padrão é `bash -e {0}`, sem pipefail, e um `comando | tee` sai com o código do `tee`:
+# um teste falhando deixava o job verde.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     name: check (typecheck, lint, unidade, integração, concorrência, e2e)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5.1.0
 
       # A mesma versão do Dockerfile e do @types/bun (D25.2).
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.4.4
 
       # Só o cache das dependências; as imagens vêm do registry (D25.6).
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -76,7 +83,7 @@ jobs:
           docker compose -f docker-compose.test.yml ps -a > logs/ci/compose-test-ps.log 2>&1 || true
           docker compose -f docker-compose.test.yml logs --no-color --timestamps > logs/ci/compose-test.log 2>&1 || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6.0.0
         if: failure()
         with:
           name: check-logs
@@ -89,13 +96,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5.1.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.4.4
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -140,7 +147,7 @@ jobs:
           docker compose ps -a > logs/ci/compose-dev-ps.log 2>&1 || true
           docker compose logs --no-color --timestamps > logs/ci/compose-dev.log 2>&1 || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6.0.0
         if: failure()
         with:
           name: acceptance-logs
