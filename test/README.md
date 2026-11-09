@@ -15,18 +15,21 @@ A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 ap
 
 ### Validação do clone limpo
 
-Validação final:
-- **Data:** 02/11/2026, 20:48 (-03:00).
-- **Commit:** `1d6c736` (`build: --build no infra:up [S10 D23.8]`), clonado sem nenhuma mudança local.
-- **Antes:** Compose do projeto derrubado e imagem `wagering-app:local` apagada.
-- **Passos, e só eles:** `git clone` numa pasta nova; `bun install`; `bun run infra:up` (construiu a imagem do código do clone); `bun run acceptance` duas vezes seguidas.
-- **Resultado:**
-  - seed: "wallet do exemplo criada";
-  - 1ª aceitação: saída 0, tudo ok, com `idempotentReplay: false` e "o consumidor processou msg-123 (linha da inbox gravada)";
-  - 2ª aceitação: saída 0, tudo ok, com `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio… não prova um novo processamento".
-- **Depois:** `docker compose down -v` no clone. A pasta foi apagada depois de conferir que não tinha link nem junction.
+Validação final da entrega:
+- **Data:** 08/11/2026, entre 22:00 e 22:15 (-03:00).
+- **Commit:** `0680a16` (`docs: fechamento para a entrega`), clonado do repositório local sem nenhuma mudança (`git status` vazio).
+- **Pasta:** uma pasta nova com outro nome (`dwp-s16`), então o Compose usou um projeto próprio, com volumes novos, sem tocar no banco de dev. Na máquina, só a infra de teste estava no ar (em portas próprias), e um PostgreSQL nativo do Windows ouvia na 5432: o `infra:up` subiu mesmo assim.
+- **Passos, só os comandos do README:**
+  1. `bun install`: 29 s.
+  2. `bun run infra:up`: saída 0 em 267 s, com o build da imagem do código do clone e o Keycloak importando o realm.
+  3. `bun run acceptance` duas vezes:
+     - 1ª, saída 0 em 6 s: `200 PROCESSED`, saldo 975.00, `idempotentReplay: false`, "o consumidor processou msg-123 (linha da inbox gravada)", "Aceitação: tudo ok";
+     - 2ª, saída 0 em 4 s: `idempotentReplay: true` e "a inbox já tinha msg-123 antes do envio… não prova um novo processamento", "Aceitação: tudo ok".
+  4. `bun run accounting:reconcile --wait 120`: saída 0 em 8 s, `consistent: true`, `settled: true`, 3 wallets consistentes, 0 atrasadas, 0 divergentes, trial balance balanceado.
+  5. Tempo real ("Como avaliar", passo 5): `realtime:watch` na wallet do exemplo, com o GET inicial em `v2` e 975.00. A BET de 10.00 com uma key nova (`curl` do README) aparece nele em ≈ 0,7 s: `v3 transação BET PROCESSED 10.00` e `v3 saldo DEBIT 10.00 → 965.00`. O `ROLLBACK` do README devolveu `PROCESSED` com 975.00.
+  6. Extra: `bun run acceptance` uma 3ª vez depois da demonstração (saída 0, tudo ok) e a reconciliação de novo (4 wallets consistentes, assentada).
 
-Antes dela, uma validação sobre `21377a1` com as mudanças da correção aplicadas, às 20:26 (aceitação duas vezes e o `seed` rodado de novo: "nada a fazer", saída 0). Na 1ª tentativa dessa validação, o `infra:up` ainda era `docker compose up -d`, sem `--build`. Ele reaproveitou uma `wagering-app:local` antiga da máquina, e o seed antigo falhou ao rodar de novo. Por isso o `infra:up` passou a usar `--build` (D23.8).
+Antes desta, a validação de 02/11/2026 (`1d6c736`) mostrou que o `infra:up` sem `--build` reaproveitava uma imagem antiga da máquina; desde então ele usa `--build` (D23.8).
 
 ## CI (D25)
 

@@ -38,12 +38,12 @@ Cada passo é conferido, e qualquer divergência faz o comando sair com erro. O 
 
 Roteiro para quem nunca viu o projeto, na ordem. Os tempos são os medidos na máquina de desenvolvimento (Windows 11, Docker Desktop no WSL2, Ryzen 7 3700X, ambiente em [`docs/load-test.md`](docs/load-test.md#ambiente)); numa máquina Linux costuma ser mais rápido. Os comandos funcionam no Git Bash, no Linux e no macOS; no PowerShell, só a função do token muda ([Token](#token-keycloak-d101-d23)).
 
-### 1. Subir tudo e rodar os exemplos do enunciado (≈ 4 min)
+### 1. Subir tudo e rodar os exemplos do enunciado (≈ 5 min)
 
 ```bash
-bun install
-bun run infra:up          # 1ª vez ≈ 3 min 40 s (build da imagem e import do realm no Keycloak); depois ≈ 1 min
-bun run acceptance        # ≈ 10 s; pode rodar de novo (a 2ª vez é o replay)
+bun install               # ≈ 30 s
+bun run infra:up          # 1ª vez ≈ 4 min 30 s (build da imagem e import do realm no Keycloak); depois ≈ 1 min
+bun run acceptance        # ≈ 5 s; pode rodar de novo (a 2ª vez é o replay)
 ```
 
 Sobe os 11 processos da topologia (tabela em [Processos](#processos)), o Postgres, o LocalStack e o Keycloak, e cria a wallet do exemplo ([seed](#a-wallet-do-exemplo-já-existe-seed-d231)). A aceitação termina com `Aceitação: tudo ok` e sai com 0; qualquer divergência sai com erro e diz qual passo falhou. Os mesmos `curl`, para rodar à mão: [Exemplos do enunciado](#exemplos-do-enunciado-9-e-10).
