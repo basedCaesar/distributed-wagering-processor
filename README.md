@@ -211,13 +211,13 @@ GitHub Actions, em Linux (`ubuntu-latest`), com o Bun 1.4.4 e as actions em vers
 
 | Workflow | Quando | O que roda |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | todo push e pull request | job `check`: `infra:test:up` e `bun run check` inteiro; falha se algum teste for pulado e exige os 7 `SIGTERM` reais (D25.3, D27.9, D28.12). Job `acceptance`: `infra:up`, `bun run acceptance` duas vezes (a 2ª é o replay), com o `realtime:watch` seguindo a wallet do exemplo na 1ª e exigindo o evento da BET (D28.13), e `accounting:reconcile` (D27.7) |
+| [`ci.yml`](.github/workflows/ci.yml) | todo push e pull request | job `check`: `infra:test:up` e `bun run check` inteiro; falha se algum teste for pulado (a única exceção é um teste instável conhecido do realtime, D25.10, [`test/README.md`](test/README.md#teste-instável-conhecido-d2510)) e exige os 7 `SIGTERM` reais (D25.3, D27.9, D28.12). Job `acceptance`: `infra:up`, `bun run acceptance` duas vezes (a 2ª é o replay), com o `realtime:watch` seguindo a wallet do exemplo na 1ª e exigindo o evento da BET (D28.13), e `accounting:reconcile` (D27.7) |
 | [`proofs.yml`](.github/workflows/proofs.yml) | manual (`workflow_dispatch`) e toda segunda, 06:00 UTC | `bun run test:proofs` (D25.5) |
 
 O badge no topo mostra o resultado do `ci.yml` no último push. Para ver uma rodada:
 
 1. **Actions** no GitHub → o workflow → a rodada.
-2. Cada job mostra o log de cada step. No `check`, o step "conferir 0 skip e os 7 SIGTERM reais" lista os 7 testes do sinal real que passaram.
+2. Cada job mostra o log de cada step. No `check`, o step "conferir os pulados (só a exceção da D25.10) e os 7 SIGTERM reais" lista os 7 testes do sinal real que passaram.
 3. Se a rodada falhou, os logs ficam em **Artifacts**, no fim da página da rodada, por 14 dias: `check-logs`, `acceptance-logs` ou `proofs-logs`. É a pasta `logs/` do runner, com a saída dos testes, o log de cada processo separado (`logs/processes/`) e os logs dos containers (`logs/ci/compose-*.log`).
 
 Para rodar as provas na hora: **Actions** → **Proofs** → **Run workflow**.

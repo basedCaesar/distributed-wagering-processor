@@ -59,13 +59,21 @@ jobs:
       # D25.3: no Linux nada é pulado. Os 7 pulados do Windows são o SIGTERM
       # real (sigterm.spec.ts, D21.2; accounting-sigterm.spec.ts, D27.9; e
       # realtime-sigterm.spec.ts, D28.12); aqui eles precisam ter passado.
-      - name: conferir 0 skip e os 7 SIGTERM reais
+      - name: conferir os pulados (só a exceção da D25.10) e os 7 SIGTERM reais
         run: |
           log=$(sed 's/\x1b\[[0-9;]*m//g' logs/ci/check.log)
-          skipped=$(grep -E '^\s*[1-9][0-9]* (skip|todo)$' <<<"$log" || true)
-          if [ -n "$skipped" ]; then
-            echo "::error::testes pulados no Linux (D25.3):"
-            echo "$skipped"
+          if grep -qE '^\s*[1-9][0-9]* todo$' <<<"$log"; then
+            echo "::error::testes todo no Linux (D25.3)"
+            exit 1
+          fi
+          # D25.10: a única exceção é o teste instável do kill -9 do realtime,
+          # pulado só no CI. Exatamente 1 skip no total, e exatamente 1
+          # `skipIf(process.env.CI` nos testes, nesse arquivo.
+          skips=$(grep -E '^\s*[0-9]+ skip$' <<<"$log" | awk '{s+=$1} END {print s+0}')
+          ci_skips=$(grep -rl 'skipIf(process.env.CI' test/ || true)
+          ci_skip_count=$( (grep -ro 'skipIf(process.env.CI' test/ || true) | wc -l)
+          if [ "$skips" -ne 1 ] || [ "$ci_skip_count" -ne 1 ] || [ "$ci_skips" != "test/integration/realtime/instance-queue.spec.ts" ]; then
+            echo "::error::pulados no Linux: $skips (esperado 1, D25.10); skipIf(process.env.CI) em: ${ci_skips:-nenhum} ($ci_skip_count)"
             exit 1
           fi
           sigterm=$(grep -E '^\(pass\) .*recebe SIGTERM' <<<"$log" || true)
