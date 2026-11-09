@@ -20,7 +20,7 @@ Portas usadas pelo Compose de dev: 3000 (api e WebSocket em `/realtime`), 5432 (
 ## Começo rápido
 
 ```bash
-git clone <url-do-repositório> distributed-wagering-processor
+git clone https://github.com/basedCaesar/distributed-wagering-processor.git distributed-wagering-processor
 cd distributed-wagering-processor
 bun install
 bun run infra:up          # (re)constrói a imagem e sobe tudo (a 1ª vez demora alguns minutos)
