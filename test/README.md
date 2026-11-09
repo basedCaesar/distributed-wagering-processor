@@ -15,7 +15,14 @@ A **aceitação fica fora do `check`**: precisa do Compose de dev completo (3 ap
 
 ### Validação do clone limpo
 
-Validação final da entrega:
+**Validação do commit final da entrega, `ca44a10`** (`test(realtime): kill -9 pulado só no CI…`), em 08/11/2026, entre 22:25 e 22:32 (-03:00). Mesmo procedimento da validação abaixo, num clone novo, só com os comandos do README:
+- `bun install`: 21 s;
+- `bun run infra:up`: saída 0 em 178 s;
+- `bun run acceptance`: a 1ª com saída 0 em 5 s, `idempotentReplay: false` e "o consumidor processou msg-123"; a 2ª com saída 0 em 4 s, `idempotentReplay: true`;
+- `bun run accounting:reconcile --wait 120`: saída 0 em 7 s, 3 wallets consistentes, 0 atrasadas, assentado;
+- tempo real (passo 5 do "Como avaliar"): os dois eventos da BET (`v5`, 975.00 → 965.00) chegaram ao `realtime:watch` cerca de 0,2 s depois do `curl`, e o `ROLLBACK` devolveu o saldo a 975.00. Depois, mais uma aceitação ok. Na 1ª tentativa desta demonstração, o script que eu usava para fazer o papel dos dois terminais mandou a BET antes de o `realtime:watch` conectar: ele leu um log da validação anterior, antes de ser truncado, e o watch esperou 120 s sem evento. Com o log apagado antes, a repetição passou.
+
+Validação anterior, do commit da documentação:
 - **Data:** 08/11/2026, entre 22:00 e 22:15 (-03:00).
 - **Commit:** `0680a16` (`docs: fechamento para a entrega`), clonado do repositório local sem nenhuma mudança (`git status` vazio).
 - **Pasta:** uma pasta nova com outro nome (`dwp-s16`), então o Compose usou um projeto próprio, com volumes novos, sem tocar no banco de dev. Na máquina, só a infra de teste estava no ar (em portas próprias), e um PostgreSQL nativo do Windows ouvia na 5432: o `infra:up` subiu mesmo assim.
