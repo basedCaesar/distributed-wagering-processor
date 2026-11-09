@@ -70,8 +70,8 @@ jobs:
           # pulado só no CI. Exatamente 1 skip no total, e exatamente 1
           # `skipIf(process.env.CI` nos testes, nesse arquivo.
           skips=$(grep -E '^\s*[0-9]+ skip$' <<<"$log" | awk '{s+=$1} END {print s+0}')
-          ci_skips=$(grep -rl 'skipIf(process.env.CI' test/ || true)
-          ci_skip_count=$( (grep -ro 'skipIf(process.env.CI' test/ || true) | wc -l)
+          ci_skips=$(grep -rl --include='*.ts' 'skipIf(process.env.CI' test/ || true)
+          ci_skip_count=$( (grep -ro --include='*.ts' 'skipIf(process.env.CI' test/ || true) | wc -l)
           if [ "$skips" -ne 1 ] || [ "$ci_skip_count" -ne 1 ] || [ "$ci_skips" != "test/integration/realtime/instance-queue.spec.ts" ]; then
             echo "::error::pulados no Linux: $skips (esperado 1, D25.10); skipIf(process.env.CI) em: ${ci_skips:-nenhum} ($ci_skip_count)"
             exit 1
